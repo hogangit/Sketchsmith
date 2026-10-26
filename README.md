@@ -14,7 +14,7 @@ node tools/build.mjs                 # 生成 dist/game.html + 根目录 index.h
 - **自测（真浏览器，无需 npm 依赖）**：
   ```bash
   node tools/smoke-browser.mjs       # Edge headless + CDP：430×932，三关各用参考解法真的走通
-  node --test tests/core.test.mjs   # 18 条单元测试（几何/判定/能力/总线/存档迁移/台词闭集与禁止话术）
+  node --test tests/core.test.mjs   # 19 条单元测试（几何/判定/能力/总线/存档迁移/台词闭集与禁止话术）
   node --test tests/l2-verdicts.test.mjs  # 关2 终态判定表 7 条（构造状态，不靠玩法运气）
   node tools/check-single-file.mjs  # 单文件 13 条门禁
   node tests/tune.mjs               # 标定用：逐关逐画法打印物理轨迹
@@ -39,7 +39,7 @@ node tools/build.mjs                 # 生成 dist/game.html + 根目录 index.h
 
 | 文件 | 说明 |
 |---|---|
-| `dist/game.html` | 单文件游戏（290,320 B / 上限 600,000 B），4 个 MIT 库 + app + 许可正文全部内联 |
+| `dist/game.html` | 单文件游戏（291,741 B / 上限 600,000 B），4 个 MIT 库 + app + 许可正文全部内联 |
 | `index.html` | 同一份产物（构建通过断言后才复制，失败则不生成） |
 | `dist/smoke-l1..l3.png` | 430×932 竖屏实机截图（三关各一张） |
 | `vendor/` | curl 自 unpkg 落盘的 4 个库 + 4 份许可 + 聚合 `LICENSES.txt` |
@@ -126,7 +126,11 @@ L3 团块+变重 → 过关（1.8s, form=wheel）
 - **不用位移门槛**（D25）：判"还能不能推进"靠位置，不靠"动了多少"。造物垂直落下给不出向右的水平推力，所以右缘退回台沿以内 = 推不回来了 = 不可推进；反之擦碰 100px 也不判失败。
 - **失败不销毁旧南瓜**（D26）：旧那颗留在停下的地方，只在原位再长一颗（`tests/l2-verdicts.test.mjs` 断言场上 ≥2 颗）。
 - 判定表本身有 7 条构造式单测（`node --test tests/l2-verdicts.test.mjs`，7/7 过），**和"能不能在玩法里碰上"是两件事**。
-- **同句台词整局 ≤2 次**（附录 A）：第 3 次起**静默**，由"悬空半边发光 / 轮廓虚线"接手。静默不致命，但**绝不许补同义句**（换句会被读成"判定变了"）。配额已抽成纯函数 `createLineQuota(max)`，并有单测断言"第 3 次必须返回 false、不同 id 各算各的"——连接成功 ≠ 会执行，配额同理。
+- **同句台词 ≤2 次**（附录 A），两个粒度：**整局**（形态台词、各关专属失败暗示）/ **每关**（跨关通用兜底句 `common_fail2`，进关 `reset()`）。
+  兜底句必须按每关计——它是"任何没预料到的终态都还有一句话"的安全网，整局额度被前一关吃光，关3..关9 就只剩余光和静默。
+  第 3 次起静默由"悬空半边发光 / 轮廓虚线"接手，**绝不许补同义句**（换句会被读成"判定变了"）。
+  配额是纯函数 `createLineQuota(max)`（带 `reset()`），粒度由 `isPerLevelLine(id)` 判定，两者都有单测：
+  `[true,true,false,false]` + "进关 reset 后又能说 2 次"——**粒度改错必须能被测试抓住**，而不是等人发现关3 以后没台词。
 
 **两处真问题（本包修掉）**：
 1. 早先 `prop-stalled`（3 秒不动 = 失败）在新关里把**正常初始状态**判成失败，而南瓜被顶到岸上之后它又不报——两头都错。已删掉那条 stall 判据，换成上面这条位置判定。

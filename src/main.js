@@ -20,7 +20,7 @@ import { BodyBudget, StrokeBudget } from './physics/budget.js';
 import { createLevelRuntime } from './level/runtime.js';
 import { getAbility, IMPLEMENTED_ABILITY_IDS } from './abilities/registry.js';
 import { AudioBus } from './audio/audio-bus.js';
-import { canFitBeforeStamp, createLineQuota, estimateSpeechMs, LINES, lineText, lineWho } from './text/lines.js';
+import { canFitBeforeStamp, createLineQuota, estimateSpeechMs, isPerLevelLine, LINES, lineText, lineWho } from './text/lines.js';
 import { LEVEL_CH1_01 } from './level/levels/ch1-01.js';
 import { LEVEL_CH1_02 } from './level/levels/ch1-02.js';
 import { LEVEL_CH1_03 } from './level/levels/ch1-03.js';
@@ -100,26 +100,26 @@ export function boot() {
     view.bubble = { who: '', text, until: mainNow() + (ms || 1800) };
   }
 
-  const allowFormLine = createLineQuota(2);
-  /** 落地形状分岔台词：闭集、同句 ≤2 次、超额静默（绝不换同义句填空，换句会被读成“形状变了”） */
-  function sayFormLine(form) {
-    const id = 'form_' + form;
-    if (!lineText(id)) return;                 // 表外不发声、不臆造
-    if (!allowFormLine(id)) return;
-    say(id, 2200);
-  }
-
-  const allowFailLine = createLineQuota(2);
   /**
-   * 终态台词：同句**整局 ≤2 次**，第 3 次起静默（附录 A 同一条规则）。
-   * 静默不致命：第 2 次有"悬空半边发光"、第 3 次有轮廓虚线接手。
-   * **不许为了"有话说"换同义句**——换句会被读成"判定变了"。
+   * 台词配额两个档（附录 A）：
+   *   · 整局档：落地形态台词 + 各关专属失败暗示，永不重置；
+   *   · 每关档：跨关通用兜底句（`common_fail2` 一类），进关时 reset ——
+   *     否则前一关把额度吃光，关3..关9 的"没预料到的终态"就没有兜底了。
+   * 静默不致命：视觉提示（悬空半边发光 / 轮廓虚线）会接手；**不许补同义句**，
+   * 换句会被读成"判定变了"。
    */
-  function sayFailLine(id) {
-    if (!lineText(id)) return;
-    if (!allowFailLine(id)) return;
-    say(id, 2600);
+  const allowRunLine = createLineQuota(2);
+  const allowLevelLine = createLineQuota(2);
+  function sayCapped(lineId, ms) {
+    if (!lineText(lineId)) return;              // 表外不发声、不臆造
+    const quota = isPerLevelLine(lineId) ? allowLevelLine : allowRunLine;
+    if (!quota(lineId)) return;
+    say(lineId, ms || 2600);
   }
+  /** 落地形状分岔台词：闭集、同句 ≤2 次（整局）、超额静默 */
+  function sayFormLine(form) { sayCapped('form_' + form, 2200); }
+  /** 终态台词：与形态台词共用整局档，跨关兜底句自动落到每关档 */
+  function sayFailLine(id) { sayCapped(id, 2600); }
 
   function currentLevel() { return GAME_LEVELS[view.levelIndex]; }
 
@@ -133,6 +133,9 @@ export function boot() {
     world.onImpact((evt) => AudioBus.play('collide', evt));
     view.level = currentLevel();
     runtime = createLevelRuntime({ level: view.level, world, bus });
+    // 进关重置"每关"档配额：跨关兜底句（common_fail2 一类）的额度不能被前一关吃光，
+    // 否则关3..关9 的"没预料到的终态"只剩余光和静默，等于把安全网关掉了。
+    allowLevelLine.reset();
     sceneSeed = 7 + view.levelIndex * 31;
     staticLayer.invalidate();
     view.win = false;
@@ -225,7 +228,7 @@ export function boot() {
     const hints = lv.failHints || [];
     const t = pickFailHint(hints, payload.hintLevel || 1, view.snapshot && view.snapshot.creature && view.snapshot.creature.form);
     if (t) toast(t, 2600);
-    else if (lv.lines.failStreak) say(lv.lines.failStreak, 2400);
+    else if (lv.lines.failStreak) sayCapped(lv.lines.failStreak, 2400);   // 兜底句也受配额，否则它会无限重播
   }
 
   bus.on('level:win', onWin);

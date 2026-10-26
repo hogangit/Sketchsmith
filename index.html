@@ -3211,18 +3211,34 @@ const LINES = {
 };
 
 /**
- * 同一句台词的**整局配额**（附录 A：同句最多 2 次，超额静默）。
+ * 同一句台词的**配额**（附录 A：同句最多 2 次，超额静默）。
  * 静默不致命——视觉提示会接手；**绝不许用同义句填空**（换句会被读成"判定变了"）。
+ *
+ * 粒度有两个档（附录 A 的例外条款）：
+ *   · **整局（per-run）**：落地形态台词、各关专属失败暗示 —— 重置点在开局/不可重置；
+ *   · **每关（per-level）**：跨关通用兜底句（见 PER_LEVEL_LINE_IDS）—— 进关时 `reset()`。
+ * 兜底句必须按每关计：它是"任何没预料到的终态都还有一句话"的安全网，
+ * 整局额度被前一关吃光，关3..关9 就没有兜底了，只剩余光和静默。
+ *
  * 抽成纯函数是为了能被单测直接数到：连接成功 ≠ 会被执行，配额也一样，必须能断言。
  */
 function createLineQuota(max = 2) {
-  const said = new Map();
-  return function allow(id) {
+  let said = new Map();
+  const allow = (id) => {
     const n = said.get(id) || 0;
     if (n >= max) return false;
     said.set(id, n + 1);
     return true;
   };
+  /** 进关时调用：只给"每关"那一档用，整局档永远不 reset */
+  allow.reset = () => { said = new Map(); };
+  return allow;
+}
+
+/** 跨关通用兜底句：配额按「每关」计，不是整局 */
+const PER_LEVEL_LINE_IDS = ['common_fail2'];
+function isPerLevelLine(id) {
+  return PER_LEVEL_LINE_IDS.indexOf(id) >= 0;
 }
 
 /** 台词文本；未知 id 返回 null（调用方决定不显示） */
@@ -3555,26 +3571,26 @@ function boot() {
     view.bubble = { who: '', text, until: mainNow() + (ms || 1800) };
   }
 
-  const allowFormLine = createLineQuota(2);
-  /** 落地形状分岔台词：闭集、同句 ≤2 次、超额静默（绝不换同义句填空，换句会被读成“形状变了”） */
-  function sayFormLine(form) {
-    const id = 'form_' + form;
-    if (!lineText(id)) return;                 // 表外不发声、不臆造
-    if (!allowFormLine(id)) return;
-    say(id, 2200);
-  }
-
-  const allowFailLine = createLineQuota(2);
   /**
-   * 终态台词：同句**整局 ≤2 次**，第 3 次起静默（附录 A 同一条规则）。
-   * 静默不致命：第 2 次有"悬空半边发光"、第 3 次有轮廓虚线接手。
-   * **不许为了"有话说"换同义句**——换句会被读成"判定变了"。
+   * 台词配额两个档（附录 A）：
+   *   · 整局档：落地形态台词 + 各关专属失败暗示，永不重置；
+   *   · 每关档：跨关通用兜底句（`common_fail2` 一类），进关时 reset ——
+   *     否则前一关把额度吃光，关3..关9 的"没预料到的终态"就没有兜底了。
+   * 静默不致命：视觉提示（悬空半边发光 / 轮廓虚线）会接手；**不许补同义句**，
+   * 换句会被读成"判定变了"。
    */
-  function sayFailLine(id) {
-    if (!lineText(id)) return;
-    if (!allowFailLine(id)) return;
-    say(id, 2600);
+  const allowRunLine = createLineQuota(2);
+  const allowLevelLine = createLineQuota(2);
+  function sayCapped(lineId, ms) {
+    if (!lineText(lineId)) return;              // 表外不发声、不臆造
+    const quota = isPerLevelLine(lineId) ? allowLevelLine : allowRunLine;
+    if (!quota(lineId)) return;
+    say(lineId, ms || 2600);
   }
+  /** 落地形状分岔台词：闭集、同句 ≤2 次（整局）、超额静默 */
+  function sayFormLine(form) { sayCapped('form_' + form, 2200); }
+  /** 终态台词：与形态台词共用整局档，跨关兜底句自动落到每关档 */
+  function sayFailLine(id) { sayCapped(id, 2600); }
 
   function currentLevel() { return GAME_LEVELS[view.levelIndex]; }
 
@@ -3588,6 +3604,9 @@ function boot() {
     world.onImpact((evt) => AudioBus.play('collide', evt));
     view.level = currentLevel();
     runtime = createLevelRuntime({ level: view.level, world, bus });
+    // 进关重置"每关"档配额：跨关兜底句（common_fail2 一类）的额度不能被前一关吃光，
+    // 否则关3..关9 的"没预料到的终态"只剩余光和静默，等于把安全网关掉了。
+    allowLevelLine.reset();
     sceneSeed = 7 + view.levelIndex * 31;
     staticLayer.invalidate();
     view.win = false;
@@ -3680,7 +3699,7 @@ function boot() {
     const hints = lv.failHints || [];
     const t = pickFailHint(hints, payload.hintLevel || 1, view.snapshot && view.snapshot.creature && view.snapshot.creature.form);
     if (t) toast(t, 2600);
-    else if (lv.lines.failStreak) say(lv.lines.failStreak, 2400);
+    else if (lv.lines.failStreak) sayCapped(lv.lines.failStreak, 2400);   // 兜底句也受配额，否则它会无限重播
   }
 
   bus.on('level:win', onWin);

@@ -32,18 +32,34 @@ export const LINES = {
 };
 
 /**
- * 同一句台词的**整局配额**（附录 A：同句最多 2 次，超额静默）。
+ * 同一句台词的**配额**（附录 A：同句最多 2 次，超额静默）。
  * 静默不致命——视觉提示会接手；**绝不许用同义句填空**（换句会被读成"判定变了"）。
+ *
+ * 粒度有两个档（附录 A 的例外条款）：
+ *   · **整局（per-run）**：落地形态台词、各关专属失败暗示 —— 重置点在开局/不可重置；
+ *   · **每关（per-level）**：跨关通用兜底句（见 PER_LEVEL_LINE_IDS）—— 进关时 `reset()`。
+ * 兜底句必须按每关计：它是"任何没预料到的终态都还有一句话"的安全网，
+ * 整局额度被前一关吃光，关3..关9 就没有兜底了，只剩余光和静默。
+ *
  * 抽成纯函数是为了能被单测直接数到：连接成功 ≠ 会被执行，配额也一样，必须能断言。
  */
 export function createLineQuota(max = 2) {
-  const said = new Map();
-  return function allow(id) {
+  let said = new Map();
+  const allow = (id) => {
     const n = said.get(id) || 0;
     if (n >= max) return false;
     said.set(id, n + 1);
     return true;
   };
+  /** 进关时调用：只给"每关"那一档用，整局档永远不 reset */
+  allow.reset = () => { said = new Map(); };
+  return allow;
+}
+
+/** 跨关通用兜底句：配额按「每关」计，不是整局 */
+export const PER_LEVEL_LINE_IDS = ['common_fail2'];
+export function isPerLevelLine(id) {
+  return PER_LEVEL_LINE_IDS.indexOf(id) >= 0;
 }
 
 /** 台词文本；未知 id 返回 null（调用方决定不显示） */

@@ -174,13 +174,30 @@ test('台词闭集：所有被引用的 id 都必须存在（含终态台词）�
   assert.equal(LINES['l2_fail_ontop'], undefined, '造物顶面台词已删除（26 次实测 0 次可达）');
 });
 
-test('同句台词配额：第 3 次必须静默，且不同 id 各算各的', async () => {
+test('同句台词配额：第 3 次必须静默，不同 id 各算各的', async () => {
   const { createLineQuota } = await import(pathToFileURL(path.join(ROOT, 'src/text/lines.js')).href);
   const allow = createLineQuota(2);
   const calls = [];
   for (let i = 0; i < 4; i++) calls.push(allow('common_fail2'));
   assert.deepEqual(calls, [true, true, false, false], '同句整局只许播 2 次，第 3 次起静默');
   assert.equal(allow('form_beam'), true, '配额按 id 各算各的，不能被别的句子耗掉');
+});
+
+test('台词配额粒度：跨关兜底句按**每关**计（否则关3 之后没兜底）', async () => {
+  const lines = await import(pathToFileURL(path.join(ROOT, 'src/text/lines.js')).href);
+  const { createLineQuota, isPerLevelLine } = lines;
+  // 粒度本身要能断言：改错了这条会红，而不是等玩家发现关3 以后没台词
+  assert.equal(isPerLevelLine('common_fail2'), true, 'common_fail2 是跨关兜底句 → 每关计');
+  assert.equal(isPerLevelLine('form_beam'), false, '形态台词 → 整局计');
+  assert.equal(isPerLevelLine('l1_win'), false, '普通台词 → 整局计');
+
+  // 模拟：关里用满 2 次 → 进下一关 reset → 又能说 2 次
+  const allow = createLineQuota(2);
+  assert.deepEqual([allow('common_fail2'), allow('common_fail2'), allow('common_fail2')], [true, true, false],
+    '同一关里只许 2 次');
+  allow.reset();
+  assert.deepEqual([allow('common_fail2'), allow('common_fail2'), allow('common_fail2')], [true, true, false],
+    '进关 reset 之后必须又能说 2 次（这条不加，粒度改错没人发现）');
 });
 
 test('关2 失败暗示：逐字锁死 + 禁止话术黑名单 + 终态走兜底', async () => {
