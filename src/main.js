@@ -20,7 +20,7 @@ import { BodyBudget, StrokeBudget } from './physics/budget.js';
 import { createLevelRuntime } from './level/runtime.js';
 import { getAbility, IMPLEMENTED_ABILITY_IDS } from './abilities/registry.js';
 import { AudioBus } from './audio/audio-bus.js';
-import { canFitBeforeStamp, estimateSpeechMs, LINES, lineText, lineWho } from './text/lines.js';
+import { canFitBeforeStamp, createLineQuota, estimateSpeechMs, LINES, lineText, lineWho } from './text/lines.js';
 import { LEVEL_CH1_01 } from './level/levels/ch1-01.js';
 import { LEVEL_CH1_02 } from './level/levels/ch1-02.js';
 import { LEVEL_CH1_03 } from './level/levels/ch1-03.js';
@@ -100,15 +100,25 @@ export function boot() {
     view.bubble = { who: '', text, until: mainNow() + (ms || 1800) };
   }
 
-  const formSaid = new Map();
+  const allowFormLine = createLineQuota(2);
   /** 落地形状分岔台词：闭集、同句 ≤2 次、超额静默（绝不换同义句填空，换句会被读成“形状变了”） */
   function sayFormLine(form) {
     const id = 'form_' + form;
     if (!lineText(id)) return;                 // 表外不发声、不臆造
-    const n = formSaid.get(id) || 0;
-    if (n >= 2) return;
-    formSaid.set(id, n + 1);
+    if (!allowFormLine(id)) return;
     say(id, 2200);
+  }
+
+  const allowFailLine = createLineQuota(2);
+  /**
+   * 终态台词：同句**整局 ≤2 次**，第 3 次起静默（附录 A 同一条规则）。
+   * 静默不致命：第 2 次有"悬空半边发光"、第 3 次有轮廓虚线接手。
+   * **不许为了"有话说"换同义句**——换句会被读成"判定变了"。
+   */
+  function sayFailLine(id) {
+    if (!lineText(id)) return;
+    if (!allowFailLine(id)) return;
+    say(id, 2600);
   }
 
   function currentLevel() { return GAME_LEVELS[view.levelIndex]; }
@@ -208,9 +218,10 @@ export function boot() {
     view.failFlash = 1;
     const lv = view.level;
     // 终态台词优先（D24/D25）：位置决定说哪句，判定只有一条。
-    // 有终态台词的失败**不再叠加暗示文字**——两句话叠在一起就是在教玩家读术语。
+    // 有终态台词时**不再叠加暗示文字**——两句话叠在一起就是在教玩家读术语。
+    // 同句整局 ≤2 次（sayFailLine 内计数），超额静默由视觉提示接手。
     const endLine = lv.failLines && lv.failLines[payload.reason];
-    if (endLine) { say(endLine, 2600); return; }
+    if (endLine) { sayFailLine(endLine); return; }
     const hints = lv.failHints || [];
     const t = pickFailHint(hints, payload.hintLevel || 1, view.snapshot && view.snapshot.creature && view.snapshot.creature.form);
     if (t) toast(t, 2600);

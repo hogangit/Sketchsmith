@@ -167,27 +167,38 @@ test('台词闭集：所有被引用的 id 都必须存在（含终态台词）�
       assert.ok(LINES[id], '关 ' + lv.id + ' 的 failLines[' + reason + '] 指向了不存在的台词 id: ' + id);
     }
   }
-  // 关2 的终态台词：D24 采纳的**独立**终态必须有台词（不许为省测试而砍）
-  assert.ok(LINES['l2_fail_beam'], '岸台面终态台词必须在');
-  assert.ok(LINES['l2_fail_ontop'], '造物顶面终态台词必须在');
+  // 关2 的终态台词：两个"不可推进"终态实测 0 次可达，**已连 id 一起删除**。
+  // 这条断言是防复发的：谁再把那两句加回来（哪怕是"预留"），这里立刻红——
+  // 不可达的台词等于没有台词，而占位是负资产（和 ch1_stamp 同一类静默 bug）。
+  assert.equal(LINES['l2_fail_beam'], undefined, '岸台面台词已删除（26 次实测 0 次可达）');
+  assert.equal(LINES['l2_fail_ontop'], undefined, '造物顶面台词已删除（26 次实测 0 次可达）');
 });
 
-test('关2 失败暗示与终态台词：逐字锁死 + 禁止话术黑名单', async () => {
+test('同句台词配额：第 3 次必须静默，且不同 id 各算各的', async () => {
+  const { createLineQuota } = await import(pathToFileURL(path.join(ROOT, 'src/text/lines.js')).href);
+  const allow = createLineQuota(2);
+  const calls = [];
+  for (let i = 0; i < 4; i++) calls.push(allow('common_fail2'));
+  assert.deepEqual(calls, [true, true, false, false], '同句整局只许播 2 次，第 3 次起静默');
+  assert.equal(allow('form_beam'), true, '配额按 id 各算各的，不能被别的句子耗掉');
+});
+
+test('关2 失败暗示：逐字锁死 + 禁止话术黑名单 + 终态走兜底', async () => {
   const { LINES } = await import(pathToFileURL(path.join(ROOT, 'src/text/lines.js')).href);
   const lv = env.levels.l2.LEVEL_CH1_02;
-  // 逐字（D24/D25 定稿，改一个字都要先改断言）
-  assert.equal(LINES['l2_fail_beam'].text, '桥搭好了。它把南瓜拍回了岸上。');
-  assert.equal(LINES['l2_fail_ontop'].text, '它没掉下去。它站在你的桥上。');
+  // 逐字（定稿，改一个字都要先改断言）
   assert.equal(lv.failHints[0], '它卡在边沿上，得往下压它。');
-  // 终态映射：位置决定说哪句
-  assert.equal(lv.failLines['prop-back-on-bank'], 'l2_fail_beam');
-  assert.equal(lv.failLines['prop-on-creature'], 'l2_fail_ontop');
-  assert.equal(lv.failLines['prop-wedged'], 'common_fail2');
+  // 三个"不可推进"终态全部走兜底台词（不再有专属 id）
+  assert.deepEqual(lv.failLines, {
+    'prop-back-on-bank': 'common_fail2',
+    'prop-on-creature': 'common_fail2',
+    'prop-wedged': 'common_fail2',
+  });
   // 禁止话术：不许否掉玩家的手法，也不许给出物理上反方向的指令
   const BANNED = ['再试', '画长一点', '画得不对', '这次可能行', '够不着', '顶', '不太行', '抬不动'];
   const texts = [
     ...lv.failHints.filter((h) => typeof h === 'string'),
-    LINES['l2_fail_beam'].text, LINES['l2_fail_ontop'].text, LINES['common_fail2'].text,
+    LINES['common_fail2'].text,
   ];
   for (const line of texts) {
     for (const banned of BANNED) {

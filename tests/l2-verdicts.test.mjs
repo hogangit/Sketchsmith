@@ -86,12 +86,15 @@ test('序 6：仍部分悬空 + 静止 → **不判任何终态**（正常初始
   assert.equal(r.propCount, 1, '不判失败就不许送新南瓜');
 });
 
-test('终态台词映射：三种"不可推进"各有一句，且都在台词表里', async () => {
+test('终态台词映射：三个"不可推进"终态全部走兜底台词（专属 id 已按实测删除）', async () => {
   const { LINES } = await import('../src/text/lines.js');
   assert.deepEqual(L2.failLines, {
-    'prop-back-on-bank': 'l2_fail_beam',
-    'prop-on-creature': 'l2_fail_ontop',
+    'prop-back-on-bank': 'common_fail2',
+    'prop-on-creature': 'common_fail2',
     'prop-wedged': 'common_fail2',
   });
   for (const id of Object.values(L2.failLines)) assert.ok(LINES[id], '台词 id 必须存在：' + id);
+  // 防复发：这两句在 26 次真实运行里 0 次可达，已连 id 删除，不许再回来
+  assert.equal(LINES['l2_fail_beam'], undefined, '岸台面台词已删除（不可达）');
+  assert.equal(LINES['l2_fail_ontop'], undefined, '造物顶面台词已删除（不可达）');
 });

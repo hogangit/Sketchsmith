@@ -27,17 +27,24 @@ export const LINES = {
   form_grain: { who: '农夫', text: '这么小？吹口气就没了。' },
   // 9.2 表：连续失败 2 次（通用）
   common_fail2: { who: '农夫', text: '不急。我等你。真的。' },
-  /**
-   * 关2 的**终态台词**（D24/D25）。两句都是**纯文字**，不进 `speechSynthesis`，
-   * 所以不占语音预算（9.2 表 29 条一条没增）。
-   * 位置决定说哪句，判定只有一条（见 runtime 的 propInZone 分支）。
-   * 「桥搭好了」是刻意的：玩家看不懂"梁"这个词是判定口径，他看见的就是一座桥。
-   */
-  l2_fail_beam: { who: '农夫', text: '桥搭好了。它把南瓜拍回了岸上。' },
-  l2_fail_ontop: { who: '农夫', text: '它没掉下去。它站在你的桥上。' },
   // 9.2 表：章节盖章（第 1 章）
   stamp1: { who: '章印', text: '第一章：东西肯听话了。' },
 };
+
+/**
+ * 同一句台词的**整局配额**（附录 A：同句最多 2 次，超额静默）。
+ * 静默不致命——视觉提示会接手；**绝不许用同义句填空**（换句会被读成"判定变了"）。
+ * 抽成纯函数是为了能被单测直接数到：连接成功 ≠ 会被执行，配额也一样，必须能断言。
+ */
+export function createLineQuota(max = 2) {
+  const said = new Map();
+  return function allow(id) {
+    const n = said.get(id) || 0;
+    if (n >= max) return false;
+    said.set(id, n + 1);
+    return true;
+  };
+}
 
 /** 台词文本；未知 id 返回 null（调用方决定不显示） */
 export function lineText(id) {

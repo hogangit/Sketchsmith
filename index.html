@@ -3206,17 +3206,24 @@ const LINES = {
   form_grain: { who: '农夫', text: '这么小？吹口气就没了。' },
   // 9.2 表：连续失败 2 次（通用）
   common_fail2: { who: '农夫', text: '不急。我等你。真的。' },
-  /**
-   * 关2 的**终态台词**（D24/D25）。两句都是**纯文字**，不进 `speechSynthesis`，
-   * 所以不占语音预算（9.2 表 29 条一条没增）。
-   * 位置决定说哪句，判定只有一条（见 runtime 的 propInZone 分支）。
-   * 「桥搭好了」是刻意的：玩家看不懂"梁"这个词是判定口径，他看见的就是一座桥。
-   */
-  l2_fail_beam: { who: '农夫', text: '桥搭好了。它把南瓜拍回了岸上。' },
-  l2_fail_ontop: { who: '农夫', text: '它没掉下去。它站在你的桥上。' },
   // 9.2 表：章节盖章（第 1 章）
   stamp1: { who: '章印', text: '第一章：东西肯听话了。' },
 };
+
+/**
+ * 同一句台词的**整局配额**（附录 A：同句最多 2 次，超额静默）。
+ * 静默不致命——视觉提示会接手；**绝不许用同义句填空**（换句会被读成"判定变了"）。
+ * 抽成纯函数是为了能被单测直接数到：连接成功 ≠ 会被执行，配额也一样，必须能断言。
+ */
+function createLineQuota(max = 2) {
+  const said = new Map();
+  return function allow(id) {
+    const n = said.get(id) || 0;
+    if (n >= max) return false;
+    said.set(id, n + 1);
+    return true;
+  };
+}
 
 /** 台词文本；未知 id 返回 null（调用方决定不显示） */
 function lineText(id) {
@@ -3373,18 +3380,23 @@ const LEVEL_CH1_02 = {
   lines: { intro: 'l2_intro', win: 'l2_win', failStreak: 'common_fail2', stamp: null },
   /**
    * 终态台词（D24/D25）：**位置决定说哪句**，判定只有一条。
-   * 这些 id 是"失败暗示"命名空间，和落地形态闭集（6 条 form_*）不是同一套；
-   * 两句都是**纯文字**，不进语音（语音预算 29 条一条没增）。
+   *
+   * 三个"不可推进"终态**全部走 `common_fail2` 兜底**。曾经为「岸台面」「造物顶面」各写过一句
+   * 专属台词（`l2_fail_beam` / `l2_fail_ontop`），26 次真实运行里**一次都触发不到**，已连 id 一起删掉：
+   *   · 岸台面：造物只会往下落，冲量只有"向下 + 向右"，**给不出向左的推力** ⇒ 这个状态不存在；
+   *   · 造物顶面：南瓜落进沟里时，要么还在口内（win）要么卡沟壁，没有干净的"站在造物上"窗口。
+   * 留一句永远不播的台词，和 `ch1_stamp` 是同一类静默 bug——**不可达的台词等于没有台词**，
+   * 而占位是负资产。等哪天真的做出"南瓜落在自己搭的东西上"这个中间态，再连机制一起加台词。
    */
   failLines: {
-    'prop-back-on-bank': 'l2_fail_beam',
-    'prop-on-creature': 'l2_fail_ontop',
+    'prop-back-on-bank': 'common_fail2',
+    'prop-on-creature': 'common_fail2',
     'prop-wedged': 'common_fail2',
   },
   /**
    * 第 1 次失败（砸偏：南瓜几乎没动 / 掉在石头上）的暗示。
    * 这里**不再按形态分岔**：梁已经是本关的合法解法之一，再去"否掉梁的方向"就是在骗玩家。
-   * 禁止话术：【再试】【画长一点】【画得不对】【顶】【够不着】——由 core.test 的闭集断言拦住。
+   * 禁止话术：【再试】【画长一点】【画得不对】【顶】【够不着】【抬不动】——由 core.test 的闭集断言拦住。
    */
   failHints: [
     '它卡在边沿上，得往下压它。',
@@ -3543,15 +3555,25 @@ function boot() {
     view.bubble = { who: '', text, until: mainNow() + (ms || 1800) };
   }
 
-  const formSaid = new Map();
+  const allowFormLine = createLineQuota(2);
   /** 落地形状分岔台词：闭集、同句 ≤2 次、超额静默（绝不换同义句填空，换句会被读成“形状变了”） */
   function sayFormLine(form) {
     const id = 'form_' + form;
     if (!lineText(id)) return;                 // 表外不发声、不臆造
-    const n = formSaid.get(id) || 0;
-    if (n >= 2) return;
-    formSaid.set(id, n + 1);
+    if (!allowFormLine(id)) return;
     say(id, 2200);
+  }
+
+  const allowFailLine = createLineQuota(2);
+  /**
+   * 终态台词：同句**整局 ≤2 次**，第 3 次起静默（附录 A 同一条规则）。
+   * 静默不致命：第 2 次有"悬空半边发光"、第 3 次有轮廓虚线接手。
+   * **不许为了"有话说"换同义句**——换句会被读成"判定变了"。
+   */
+  function sayFailLine(id) {
+    if (!lineText(id)) return;
+    if (!allowFailLine(id)) return;
+    say(id, 2600);
   }
 
   function currentLevel() { return GAME_LEVELS[view.levelIndex]; }
@@ -3651,9 +3673,10 @@ function boot() {
     view.failFlash = 1;
     const lv = view.level;
     // 终态台词优先（D24/D25）：位置决定说哪句，判定只有一条。
-    // 有终态台词的失败**不再叠加暗示文字**——两句话叠在一起就是在教玩家读术语。
+    // 有终态台词时**不再叠加暗示文字**——两句话叠在一起就是在教玩家读术语。
+    // 同句整局 ≤2 次（sayFailLine 内计数），超额静默由视觉提示接手。
     const endLine = lv.failLines && lv.failLines[payload.reason];
-    if (endLine) { say(endLine, 2600); return; }
+    if (endLine) { sayFailLine(endLine); return; }
     const hints = lv.failHints || [];
     const t = pickFailHint(hints, payload.hintLevel || 1, view.snapshot && view.snapshot.creature && view.snapshot.creature.form);
     if (t) toast(t, 2600);

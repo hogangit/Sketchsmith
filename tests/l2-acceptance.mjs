@@ -150,7 +150,7 @@ if (which === 'all' || which === '1') {
   const never = ['prop-back-on-bank', 'prop-on-creature'].filter((k) => !tally['fail:' + k]);
   if (never.length) {
     for (const k of never) {
-      console.log(`  ⚠️  ${k} 在 ${battery.length} 次真实运行里**一次都没出现** ⇒ 对应台词（${L2.failLines[k]}）在玩法里是死的，已上报`);
+      console.log(`  ⚠️  ${k} 在 ${battery.length} 次真实运行里**一次都没出现** ⇒ 这个终态在玩法里不可达（判定分支保留，走兜底台词 ${L2.failLines[k]}；专属台词已连 id 删除）`);
     }
   }
 }
