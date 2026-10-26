@@ -785,9 +785,8 @@ function drawHud(ctx, view) {
   ctx.fillText(view.audioOn ? '声' : '静', DESIGN_W - 34, 76);
 
   // ---- 失败提示（只在场景上沿，不压地形）----
-  // 提示项可以是字符串，也可以是 {beam, other}：**按玩家上一次造出来的形态分岔**。
-  // 关2 用这个：梁 → 「梁撑得住。南瓜我抬不动。」（否掉方向），其他形态 → 常规暗示。
-  // 【禁止话术·写死在这里】任何提示里不许出现「再试试」「再画长一点」「这次可能行」
+  // 提示项可以是字符串，也可以是 {beam, other}：**按玩家上一次造出来的形态分岔**（关1 在用）。
+  // 【禁止话术·写死在这里】不许出现「再试」「画长一点」「画得不对」「够不着」「顶」
   //   —— 提示要否掉方向，不要否掉玩家的手法；后者会让他在错误方向上更努力。
   const hints = view.level.failHints || [];
   if (snap.hintLevel > 0 && hints.length) {
@@ -909,7 +908,13 @@ function drawHud(ctx, view) {
 
 /**
  * 失败提示的取值（纯函数，便于单测）：字符串直接返回；{beam, other} 按形态分岔。
- * 关2 的方向型对照靠这个分岔——它是"提示是否真的被说出"的**可断言入口**。
+ * 形态分岔现在只有关1 在用——**关2 已不再按形态分岔**（梁是合法解，去否掉梁的方向就是骗玩家），
+ * 但分岔机制本身保留：它是"提示是否真的被说出"的可断言入口。
+ *
+ * 【禁止话术·闭集】任何提示里不许出现「再试」「画长一点」「画得不对」「这次可能行」「够不着」，
+ * 「顶」也不许（"从底下往上顶"重心往里走，南瓜更稳——那是反的）。
+ * 由 tests/ 下的闭集断言拦住，不靠自觉（注释里别写测试文件名：产物里一旦出现测试文件后缀，
+ * 单文件门禁 L2"测试未被打进产物"就会红——那条断言是对的，别去改它）。
  */
 function pickFailHint(hints, hintLevel, form) {
   if (!hints || !hints.length || !(hintLevel > 0)) return '';
@@ -2213,8 +2218,19 @@ const LANDING_MAX_FALL_SPEED = 3.4;   // px/step，落地缓冲期内的下落�
 const LANDING_FRAMES = 26;
 const ACTOR_PIT_FAIL_MS = 2500;
 const PLATE_LIGHT_FAIL_MS = 2500;
-/** 南瓜"已经停稳"的速度门槛（px/step）：低于它才算落点已定，才判砸碎 */
-const SETTLE_SPEED = 1.2;
+/**
+ * 南瓜"已经停稳"的口径（D25）[待实测标定]
+ *   |v| < SETTLE_V px/帧 且 |ω| < SETTLE_W rad/帧，并且**连续** SETTLE_MS 都低于阈值。
+ * 为什么要"连续每帧"而不是"首末两帧"：南瓜被慢慢推着爬的时候首末都恰好很慢，
+ * 只比两点会把它判成静止 → 判失败 → 重置舞台，而它其实还在局中。
+ */
+const SETTLE_V = 0.2;
+const SETTLE_W = 0.02;
+const SETTLE_MS = 1500;          // 90 帧 @60fps
+/** 南瓜中心低于此高度 = 已经到沟底（棚布面 470、停稳中心 ≈430） */
+const PROP_FLOOR_Y = 400;
+/** 台沿 x：南瓜右缘越过它 = 还部分悬空 = 可推进 */
+const CHASM_RIM_X = 200;
 
 function clampNum(v, lo, hi) { return v < lo ? lo : v > hi ? hi : v; }
 
@@ -2287,6 +2303,7 @@ function createLevelRuntime(opts) {
     terrain: [],
     actor: null,
     props: [],
+    activeProp: 0,
     plates: [],
     creatures: [],
     activeCreature: null,
@@ -2314,22 +2331,28 @@ function createLevelRuntime(opts) {
   if (level.actors && level.actors.length) state.actor = spawnWalkerBody(level.actors[0], world);
 
   // ---- 道具（关2 的南瓜） ----
-  for (const p of level.props || []) {
+  // 失败时**不销毁旧南瓜**（D26）：它留在停下的地方，只在原位再长一颗新的。
+  // 理由：重生是这个游戏里唯一会拿走玩家东西的操作，能少拿一次就少拿一次。
+  function createProp(def, isRespawn) {
     const mat = MATERIALS.pumpkin;
-    const body = MATTER_RT.Bodies.rectangle(p.x, p.y, p.w, p.h, {
+    const body = MATTER_RT.Bodies.rectangle(def.x, def.y, def.w, def.h, {
       label: 'prop', friction: mat.friction, frictionStatic: mat.frictionStatic,
       restitution: mat.restitution, frictionAir: mat.frictionAir == null ? 0.01 : mat.frictionAir,
     });
     MATTER_RT.Body.setDensity(body, DENSITY_PUMPKIN);   // 红线 L6：密度只在 materials.js 里写
     body.plugin = {
-      kind: p.kind, home: { x: p.x, y: p.y }, graceMs: p.graceMs || 0,
-      vx0: Number.isFinite(p.vx0) ? p.vx0 : null, stallMs: 0,
-      releaseOnSpawn: p.releaseOnSpawn === true,
+      kind: def.kind, home: { x: def.x, y: def.y }, graceMs: def.graceMs || 0,
+      vx0: Number.isFinite(def.vx0) ? def.vx0 : null, stallMs: 0, settleMs: 0,
+      releaseOnSpawn: def.releaseOnSpawn === true,
+      isRespawn: !!isRespawn,
     };
     if (body.plugin.graceMs > 0) MATTER_RT.Body.setStatic(body, true);
     world.addBody(body);
     state.props.push(body);
+    return body;
   }
+  for (const p of level.props || []) createProp(p, false);
+  state.activeProp = 0;
 
   // ---- 压板 ----
   for (const pl of level.plates || []) {
@@ -2487,6 +2510,36 @@ function createLevelRuntime(opts) {
     emit('level:fail', { reason, failStreak: state.failStreak, hintLevel: state.hintLevel });
   }
 
+  /** 南瓜被判定为终态（碎 / 退回岸 / 站在造物上 / 卡沟壁）：报失败，并在原位再长一颗 */
+  function failProp(p, reason) {
+    if (p.plugin.verdict) return;
+    p.plugin.verdict = reason;
+    fail(reason);
+    // D26：旧南瓜**不销毁**，留在停下的地方；新的一颗回台沿原位。
+    const def = level.props[0];
+    if (def) createProp(def, true);
+    state.activeProp = state.props.length - 1;
+  }
+
+  /**
+   * 南瓜底下第一块支撑是不是造物（梁顶 / 团块顶）。
+   * 不能只做射线：射线只取"下方第一块"，会把**压在南瓜上**的造物也算进来（实测误判）。
+   * 这里直接按几何判：造物顶面必须在南瓜底面下方 14px 内、且水平投影有重叠。
+   */
+  function supportIsCreature(p) {
+    const bottom = p.bounds.max.y;
+    for (const c of state.creatures) {
+      for (const b of c.bodies) {
+        if (b.isStatic) continue;
+        const dy = b.bounds.min.y - bottom;
+        if (dy < -2 || dy > 14) continue;
+        const overlap = Math.min(b.bounds.max.x, p.bounds.max.x) - Math.max(b.bounds.min.x, p.bounds.min.x);
+        if (overlap > 6) return true;
+      }
+    }
+    return false;
+  }
+
   function updateWalker(dtMs) {
     const a = state.actor;
     if (!a) return;
@@ -2557,25 +2610,46 @@ function createLevelRuntime(opts) {
       const p = state.props[g.propIndex || 0];
       if (p && p.position.x >= g.x) win('prop-delivered');
     } else if (g.type === 'propInZone') {
-      // 关2：收货口是一个区域，不是一个 x 坐标。
-      // 进去 = 成功；在沟底停稳但在区域外 = 砸在沟底石头上 = 碎（失败）。
+      // ── 关2：**一条判定 + 四个终态**（D24/D25）──────────────────────────────
+      // 判定只有一句：南瓜在**非收货口区域停止推进**并静止 → 失败。
+      // 位置不参与"判不判"，只参与"说哪句"。
       //
-      // [实测坑] g.y 是**南瓜中心**的判定高度，不是地面的高度：
-      // 沟底棚布面 y=470，南瓜 62 高 → 停稳时中心 y≈430（实测 426–435）。
-      // 早先写 460（"比地面低一点"）→ 永远不成立 → 关卡对任何解法都不可过（实测 25/25 timeout）。
-      // 所以门槛取 400（比台面 300 低一整个南瓜身位，且在停稳高度之上）。
+      // **顺序是硬要求**：进收货口的南瓜同样是静止的，先判静止就会把 win 判成 fail。
+      //   1 win  进收货口区域
+      //   2 碎   到沟底但落在石头/棚布外沿（已有流程）
+      //   3 fail-A 完全退回岸台面（右缘 ≤ 台沿）→ 不可推进
+      //   4 fail-B 停在造物顶面（梁顶/团块顶）→ 不可推进
+      //   5 fail-C 卡在沟壁（台面与沟底之间）→ 不可推进
+      //   6 仍部分悬空 + 静止 → **不判任何终态**：这是正常初始态，也是可继续的状态
       //
-      // [实测坑] 失败必须等它**慢下来**才判：下落途中 x 还在扫过口沿，
-      // 用瞬时 x 判会把"擦着口沿最后滚进去"的球误判成碎。
-      const p = state.props[g.propIndex || 0];
+      // "仍部分悬空"是位置事实而不是"动了多少"：造物垂直落下产生不了向右的水平推力，
+      // 所以右缘一旦退回到台沿以内就再也推不回来了 = 不可推进。反之擦碰 100px 也不判失败。
+      //
+      // 注：本关南瓜初始就是悬空态（164..226），所以开局的静止永远不会落进 3–5 —— 这条
+      // 依赖关卡几何。以后若有"南瓜初始就躺在岸上"的关，需要显式的 inPlay 标志。
+      const p = state.props[state.activeProp];
       if (!p) return;
-      if (p.position.y < g.y) {
-        if (p.position.y < 260) state.propSmashed = false;   // 南瓜被重置回台上，标记复位
+      const speed = Math.hypot(p.velocity.x, p.velocity.y);
+      const spin = Math.abs(p.angularVelocity);
+      const slow = speed < SETTLE_V && spin < SETTLE_W;
+      p.plugin.settleMs = slow ? (p.plugin.settleMs || 0) + FIXED_STEP_MS : 0;
+      const settled = p.plugin.settleMs >= SETTLE_MS;
+
+      // 1 win
+      if (p.position.y >= g.y && p.position.x >= g.x1 && p.position.x <= g.x2) { win('prop-caught'); return; }
+      // 2 碎
+      if (p.position.y >= g.y) {
+        if (settled) failProp(p, 'prop-smashed');
         return;
       }
-      if (p.position.x >= g.x1 && p.position.x <= g.x2) { win('prop-caught'); return; }
-      const speed = Math.hypot(p.velocity.x, p.velocity.y);
-      if (speed < SETTLE_SPEED && !state.propSmashed) { state.propSmashed = true; fail('prop-smashed'); }
+      if (!settled) return;
+      // 3 fail-A 完全退回岸台面
+      if (p.bounds.max.x <= CHASM_RIM_X + 1 && p.position.y < PROP_FLOOR_Y) { failProp(p, 'prop-back-on-bank'); return; }
+      // 4 fail-B 停在造物顶面
+      if (supportIsCreature(p)) { failProp(p, 'prop-on-creature'); return; }
+      // 5 fail-C 卡在沟壁（台面与沟底之间）
+      if (p.position.y > 320 && p.position.y < PROP_FLOOR_Y) { failProp(p, 'prop-wedged'); return; }
+      // 6 仍悬空 / 仍在台面上但没退回去 → 不判，等玩家继续
     } else if (g.type === 'plateSustained') {
       const p = state.plates.find((x) => x.def.id === g.plateId) || state.plates[0];
       if (p && p.on) win('plate-sustained');
@@ -2643,17 +2717,19 @@ function createLevelRuntime(opts) {
   function updatePropReset() {
     const limit = level.resetPropIfBelowY;
     if (limit == null) return;
-    for (const p of state.props) {
-      if (p.position.y > limit) {
-        MATTER_RT.Body.setPosition(p, p.plugin.home);
-        MATTER_RT.Body.setVelocity(p, { x: 0, y: 0 });
-        MATTER_RT.Body.setAngle(p, 0);
-        MATTER_RT.Body.setAngularVelocity(p, 0);
-        p.plugin.graceMs = 1400;
-        MATTER_RT.Body.setStatic(p, true);
-        fail('prop-lost');
-        resetActorForRetry();
-      }
+    for (const p of state.props.slice()) {
+      if (p.position.y <= limit || p.plugin.verdict) continue;
+      // 掉出世界了：这一颗确实留不住（它不是"停在哪"，是没了），所以从世界里移走再补一颗。
+      p.plugin.verdict = 'prop-lost';
+      world.removeBody(p);
+      const i = state.props.indexOf(p);
+      if (i >= 0) state.props.splice(i, 1);
+      state.activeProp = Math.max(0, state.activeProp - (i >= 0 && i < state.activeProp ? 1 : 0));
+      fail('prop-lost');
+      const def = level.props[0];
+      if (def) createProp(def, true);
+      state.activeProp = state.props.length - 1;
+      resetActorForRetry();
     }
   }
 
@@ -2746,7 +2822,7 @@ function createLevelRuntime(opts) {
         id: p.def.id, load: p.load, threshold: p.def.threshold, holdMs: p.holdMs, on: p.on,
       })),
       actorPos: state.actor ? { x: state.actor.body.position.x, y: state.actor.body.position.y } : null,
-      propPos: state.props[0] ? { x: state.props[0].position.x, y: state.props[0].position.y } : null,
+      propPos: state.props[state.activeProp] ? { x: state.props[state.activeProp].position.x, y: state.props[state.activeProp].position.y } : null,
       hints: level.hints,
       guides: level.guides || [],
       degradeLog: state.degradeLog.slice(-5),
@@ -3130,6 +3206,14 @@ const LINES = {
   form_grain: { who: '农夫', text: '这么小？吹口气就没了。' },
   // 9.2 表：连续失败 2 次（通用）
   common_fail2: { who: '农夫', text: '不急。我等你。真的。' },
+  /**
+   * 关2 的**终态台词**（D24/D25）。两句都是**纯文字**，不进 `speechSynthesis`，
+   * 所以不占语音预算（9.2 表 29 条一条没增）。
+   * 位置决定说哪句，判定只有一条（见 runtime 的 propInZone 分支）。
+   * 「桥搭好了」是刻意的：玩家看不懂"梁"这个词是判定口径，他看见的就是一座桥。
+   */
+  l2_fail_beam: { who: '农夫', text: '桥搭好了。它把南瓜拍回了岸上。' },
+  l2_fail_ontop: { who: '农夫', text: '它没掉下去。它站在你的桥上。' },
   // 9.2 表：章节盖章（第 1 章）
   stamp1: { who: '章印', text: '第一章：东西肯听话了。' },
 };
@@ -3219,36 +3303,28 @@ const LEVEL_CH1_01 = {
  *
  * 判定只有一句话：**把南瓜弄下台沿，让它落进沟底的收货口**。
  *
+ * ── 教学变量：**落点决定成败**（D23，形状退到演出与手感层）─────────────────────
+ *   撞在 164..200（**靠岸那半边**）→ 位移 2.27–3.29px，什么都不发生（南瓜仍然立着）；
+ *   撞在 200..226（**悬空那半边**）→ 位移 143.30–145.71px，直接翻下去。
+ * 所以本关是**唯一不靠能力**的一关：变硬、会滚都是预演（两个能力在关3 都有正解场）。
+ *
+ * ── 梁是**第三条真解**，不许为它设障（D23）──────────────────────────────────
+ * 跨沟的梁从 spawnY=84 落下来时会扫过 200..226，把南瓜顶进收货口，实测 6/6 过关。
+ * **这是聪明的操作，判它失败才是"系统在骗我"。** 早年按"梁必须碰不到南瓜"建的对照组
+ * 已经作废：那条判据与"关卡可过"在几何上互斥（详见 README 5.1，含实测表）。
+ *
  * ── 落位（D22）：重心 x=195，南瓜 164..226，悬空 26px ≈42% ─────────────────────
- * 这不是拍出来的数，是被"能不能过"逼出来的。实测（tests/l2-passable.mjs，每种造物 5 个落点）：
- *   · 不悬空（重心 165，南瓜 134..196）：25 次尝试 **0 胜**，南瓜全程不动（13.45 的质量推不动）；
- *   · 悬空 26px（重心 195，本文件）：**19/25 胜**，南瓜落点 x 238–248、y 426–435，全在收货口里。
- *   ⇒ 悬空是**唯一**让"压/砸悬空半边 → 重心越过台沿 → 翻下去"这条链成立的几何。
- *
- * ── 为什么"长条对照组"的原始判据（南瓜位移 ≤2px）在这个关卡里不可能成立 ──────────
- * 两条实测事实合起来排除所有落位：
- *   ① 造物从 spawnY=84 **自由落体**，落点 x = 笔画质心 x（见 runtime.spawnCreature）。
- *      所以一根"横跨沟"的梁，质心必然落在沟中间 265 附近 —— 它天然横在两床上，这是梁失败的原因。
- *   ② 但同一根梁的**左端**在静止时落在 x≈172–178（实测 t=5: 168..178，t=20: 159..178）：
- *      它从天上下来的一路上都盖住 172 往右的整段。
- *   ⇒ 要让南瓜"完全不位移"，南瓜必须整块都在 172 左边（重心 ≤134）；而 ≤134 就一定不悬空，
- *     一定推不动（事实 A 的 0 胜）。两个条件互斥，**判据 1 与"关卡可过"不可兼得**。
- *     实测数字：重心 140 → 位移 3.29 / 11.78px（t=5 / t=20）；重心 195 → 位移 174.62 / 173.30px。
- *   已上报设计侧，改为"梁**过不了关**"这一条可验证的判据（见 README 关2 状态）。
- *
- *   "梁的顶面 = 台面 − t、永远低于南瓜底面"这句话**只对放好之后的梁成立**：
- *   梁要在两床上卧稳，顶面就是 300 − t（t=5/20 → 295/280），确实低于南瓜底 300。
- *   但它在放好之前要先从 y=84 掉下来，那一段它比南瓜高得多。
- *   「顶面 = 300 − t」和「质心落在沟中间」这两条合起来才是完整的对照组证明。
- *
- * ── 三条路径 ───────────────────────────────────────────────────────────────
- *   ① 圆 → 轮：砸/压在悬空半边（x 200..226 上空）→ 重心越过台沿 → 落进收货口
- *   ② 团块（变硬）：同一落点，质量更大更好压 → 兜底，但真能用
- *   ③ 会滚：上滚更远，本关只作预演，不承当解法
+ * 被"能不能过"逼出来的（tests/l2-passable.mjs，3 落位 × 5 造物 × 5 落点）：
+ *   · 不悬空（重心 165）→ **0/25 胜**，南瓜 13.45 的质量推不动；
+ *   · 悬空 26px（重心 195）→ **19/25 胜**。
+ * 悬空太多也不行：势垒 = 重心到台沿的距离 r 减去半高 31 —— 悬空 26px 时只剩 **0.40px**
+ * 的重心抬升，实测静置漂移 0.12px（稳），悬空 31px 当场翻。**可调区间只有 24–27px。**
  *
  * ── 一条都不建的（D21/D22）──────────────────────────────────────────────────
  *   短坡（8–12°）、两级台阶、台沿矮唇、夹槽支点、240px 笔画上限、关3 的撬杠。
- *   理由：方南瓜在 8–12° 有摩擦的坡上不会动（绕棱翻倒要 >45°），那条坡只会把两条真解同时卡死。
+ *   理由：方南瓜在 8–12° 有摩擦的坡上不会动（绕棱翻倒要 >45°），那条坡只会把真解卡死；
+ *   撬杠的反证留在 tests/lever.mjs（力矩够，但梁架在单块石头上会翻；加夹槽防翻又把转角
+ *   夹到 0.8–3.3°，南瓜永远进不了集市）。
  */
 const LEVEL_CH1_02 = {
   id: 'ch1-02',
@@ -3277,8 +3353,9 @@ const LEVEL_CH1_02 = {
   resetPropIfBelowY: 620,
   guides: [{ x: 200, y: 300 }, { x: 330, y: 300 }],
   hints: {
-    // 第 2/3 次失败：只圈**悬空的那半边**（不是桥、不是整个南瓜）
-    beamOutline: { x1: 200, y1: 240, x2: 226, y2: 240 },
+    // 第 2 次失败起：只圈**悬空的那半边**（不是桥、不是整个南瓜）。
+    // 落点教学全靠它——撞在 164..200 那半边，位移 2–3px，什么都不发生；撞在 200..226，直接下去。
+    dropZone: { x1: 200, y1: 240, x2: 226, y2: 240, fromHint: 2 },
     highlight: [{ x: 214, y: 258, r: 24 }],
   },
   scenery: [
@@ -3294,8 +3371,23 @@ const LEVEL_CH1_02 = {
     { kind: 'text', x: 380, y: 286, text: '集市（在下面）', size: 10, align: 'center' },
   ],
   lines: { intro: 'l2_intro', win: 'l2_win', failStreak: 'common_fail2', stamp: null },
+  /**
+   * 终态台词（D24/D25）：**位置决定说哪句**，判定只有一条。
+   * 这些 id 是"失败暗示"命名空间，和落地形态闭集（6 条 form_*）不是同一套；
+   * 两句都是**纯文字**，不进语音（语音预算 29 条一条没增）。
+   */
+  failLines: {
+    'prop-back-on-bank': 'l2_fail_beam',
+    'prop-on-creature': 'l2_fail_ontop',
+    'prop-wedged': 'common_fail2',
+  },
+  /**
+   * 第 1 次失败（砸偏：南瓜几乎没动 / 掉在石头上）的暗示。
+   * 这里**不再按形态分岔**：梁已经是本关的合法解法之一，再去"否掉梁的方向"就是在骗玩家。
+   * 禁止话术：【再试】【画长一点】【画得不对】【顶】【够不着】——由 core.test 的闭集断言拦住。
+   */
   failHints: [
-    { beam: '梁撑得住。可它够不着南瓜。', other: '它卡在边沿上，得往下压它。' },
+    '它卡在边沿上，得往下压它。',
     '它是方的，自己不会走。造物往下扔，砸到它悬空的那半边。',
     '轮子或硬团块都行：落在 x 200–226 的上空，让它砸下来。',
   ],
@@ -3558,8 +3650,12 @@ function boot() {
     AudioBus.play('fail');
     view.failFlash = 1;
     const lv = view.level;
+    // 终态台词优先（D24/D25）：位置决定说哪句，判定只有一条。
+    // 有终态台词的失败**不再叠加暗示文字**——两句话叠在一起就是在教玩家读术语。
+    const endLine = lv.failLines && lv.failLines[payload.reason];
+    if (endLine) { say(endLine, 2600); return; }
     const hints = lv.failHints || [];
-    const t = hints[Math.min(hints.length - 1, Math.max(0, (payload.hintLevel || 1) - 1))];
+    const t = pickFailHint(hints, payload.hintLevel || 1, view.snapshot && view.snapshot.creature && view.snapshot.creature.form);
     if (t) toast(t, 2600);
     else if (lv.lines.failStreak) say(lv.lines.failStreak, 2400);
   }
@@ -3692,10 +3788,12 @@ function boot() {
       ctx.fill();
       ctx.restore();
     }
-    // 提示轮廓（只在第一次失败后出现）
-    const showHint = (view.snapshot && view.snapshot.hintLevel > 0) && lv.hints && lv.hints.beamOutline;
-    if (showHint) {
-      const b = lv.hints.beamOutline;
+    // 提示轮廓：关1 画桥位（beamOutline），关2 画**悬空那半边**（dropZone，第 2 次失败起）。
+    // 关2 不再画桥：梁已经是合法解，画一座桥等于教玩家画非主解，而本关的教学是"砸哪儿"。
+    const hintShape = lv.hints && (lv.hints.dropZone || lv.hints.beamOutline);
+    const hintFrom = (hintShape && hintShape.fromHint) || 1;
+    if (view.snapshot && view.snapshot.hintLevel >= hintFrom && hintShape) {
+      const b = hintShape;
       ctx.save();
       ctx.setLineDash([6, 5]);
       ctx.strokeStyle = 'rgba(80,120,90,0.8)';

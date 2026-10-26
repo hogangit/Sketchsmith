@@ -136,36 +136,62 @@ test('upgradeProgress：脏数据降级成默认进度，不抛异常', () => {
 });
 
 
-test('关2 首次失败提示按形态分岔（方向型对照）', async () => {
+test('失败提示：形态分岔机制仍然生效（关1 在用），且不含禁止话术', async () => {
   const { pickFailHint } = await import(pathToFileURL(path.join(ROOT, 'src/render/hud.js')).href);
-  const hints = [{ beam: '梁撑得住。南瓜我抬不动。', other: '它得先下去，还不能碎。' }, '第二次'];
-  assert.equal(pickFailHint(hints, 1, 'beam'), '梁撑得住。南瓜我抬不动。', '梁 → 否掉方向');
+  const hints = [{ beam: '梁试试别的用法。', other: '它得先下去，还不能碎。' }, '第二次'];
+  assert.equal(pickFailHint(hints, 1, 'beam'), '梁试试别的用法。', '梁 → 方向型暗示');
   assert.equal(pickFailHint(hints, 1, 'wheel'), '它得先下去，还不能碎。', '轮 → 常规暗示');
   assert.equal(pickFailHint(hints, 1, 'blob'), '它得先下去，还不能碎。', '团块 → 常规暗示');
   assert.equal(pickFailHint(hints, 2, 'beam'), '第二次', '第 2 次起回到阶梯文案');
   assert.equal(pickFailHint(hints, 0, 'beam'), '', '没失败就不提示');
-  // 禁止话术判据：提示只能否方向，不许否玩家的手法
-  const all = ['梁撑得住。南瓜我抬不动。', '它得先下去，还不能碎。'];
-  for (const line of all) {
-    for (const banned of ['再试试', '再画长一点', '这次可能行', '不太行']) {
-      assert.equal(line.indexOf(banned) >= 0, false, '提示里不许出现「' + banned + '」');
-    }
-  }
+  assert.equal(pickFailHint(['纯字符串'], 1, 'beam'), '纯字符串', '字符串项直接返回');
 });
 
-
-test('台词闭集：关卡只许引用 lines.js 里存在的 id，形态台词只有 6 条', async () => {
+test('台词闭集：所有被引用的 id 都必须存在（含终态台词），形态台词只有 6 条', async () => {
   const { LINES } = await import(pathToFileURL(path.join(ROOT, 'src/text/lines.js')).href);
   // 形态台词 = 闭集（附录 A 的 6 条）；多一条少一条都要在这里失败
   const formIds = Object.keys(LINES).filter((k) => k.indexOf('form_') === 0).sort();
   assert.equal(formIds.length, 6, '形态台词必须是 6 条闭集，实际 ' + formIds.length);
-  // 三关的 lines 槽位指向的 id 必须真实存在（写错的 id 在运行时只会静默不出声）
+  // 关卡里**每一处**台词引用都必须能解析：lines 的每个槽 + failLines 的每个终态
+  // （ch1_stamp vs stamp1 那个静默 bug 就是靠这条抓到的：写错的 id 运行时只会不出声）
   const levelMods = [env.levels.l1.LEVEL_CH1_01, env.levels.l2.LEVEL_CH1_02, env.levels.l3.LEVEL_CH1_03];
   for (const lv of levelMods) {
     for (const slot of Object.keys(lv.lines || {})) {
       const id = lv.lines[slot];
       if (id == null) continue;
       assert.ok(LINES[id], '关 ' + lv.id + ' 的 lines.' + slot + ' 指向了不存在的台词 id: ' + id);
+    }
+    for (const reason of Object.keys(lv.failLines || {})) {
+      const id = lv.failLines[reason];
+      if (id == null) continue;
+      assert.ok(LINES[id], '关 ' + lv.id + ' 的 failLines[' + reason + '] 指向了不存在的台词 id: ' + id);
+    }
+  }
+  // 关2 的终态台词：D24 采纳的**独立**终态必须有台词（不许为省测试而砍）
+  assert.ok(LINES['l2_fail_beam'], '岸台面终态台词必须在');
+  assert.ok(LINES['l2_fail_ontop'], '造物顶面终态台词必须在');
+});
+
+test('关2 失败暗示与终态台词：逐字锁死 + 禁止话术黑名单', async () => {
+  const { LINES } = await import(pathToFileURL(path.join(ROOT, 'src/text/lines.js')).href);
+  const lv = env.levels.l2.LEVEL_CH1_02;
+  // 逐字（D24/D25 定稿，改一个字都要先改断言）
+  assert.equal(LINES['l2_fail_beam'].text, '桥搭好了。它把南瓜拍回了岸上。');
+  assert.equal(LINES['l2_fail_ontop'].text, '它没掉下去。它站在你的桥上。');
+  assert.equal(lv.failHints[0], '它卡在边沿上，得往下压它。');
+  // 终态映射：位置决定说哪句
+  assert.equal(lv.failLines['prop-back-on-bank'], 'l2_fail_beam');
+  assert.equal(lv.failLines['prop-on-creature'], 'l2_fail_ontop');
+  assert.equal(lv.failLines['prop-wedged'], 'common_fail2');
+  // 禁止话术：不许否掉玩家的手法，也不许给出物理上反方向的指令
+  const BANNED = ['再试', '画长一点', '画得不对', '这次可能行', '够不着', '顶', '不太行', '抬不动'];
+  const texts = [
+    ...lv.failHints.filter((h) => typeof h === 'string'),
+    LINES['l2_fail_beam'].text, LINES['l2_fail_ontop'].text, LINES['common_fail2'].text,
+  ];
+  for (const line of texts) {
+    for (const banned of BANNED) {
+      assert.equal(line.indexOf(banned) >= 0, false, '「' + line + '」里不许出现「' + banned + '」');
     }
   }
 });

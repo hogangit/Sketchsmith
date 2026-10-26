@@ -23,8 +23,19 @@ const LANDING_MAX_FALL_SPEED = 3.4;   // px/step，落地缓冲期内的下落�
 const LANDING_FRAMES = 26;
 const ACTOR_PIT_FAIL_MS = 2500;
 const PLATE_LIGHT_FAIL_MS = 2500;
-/** 南瓜"已经停稳"的速度门槛（px/step）：低于它才算落点已定，才判砸碎 */
-const SETTLE_SPEED = 1.2;
+/**
+ * 南瓜"已经停稳"的口径（D25）[待实测标定]
+ *   |v| < SETTLE_V px/帧 且 |ω| < SETTLE_W rad/帧，并且**连续** SETTLE_MS 都低于阈值。
+ * 为什么要"连续每帧"而不是"首末两帧"：南瓜被慢慢推着爬的时候首末都恰好很慢，
+ * 只比两点会把它判成静止 → 判失败 → 重置舞台，而它其实还在局中。
+ */
+const SETTLE_V = 0.2;
+const SETTLE_W = 0.02;
+const SETTLE_MS = 1500;          // 90 帧 @60fps
+/** 南瓜中心低于此高度 = 已经到沟底（棚布面 470、停稳中心 ≈430） */
+const PROP_FLOOR_Y = 400;
+/** 台沿 x：南瓜右缘越过它 = 还部分悬空 = 可推进 */
+const CHASM_RIM_X = 200;
 
 function clampNum(v, lo, hi) { return v < lo ? lo : v > hi ? hi : v; }
 
@@ -97,6 +108,7 @@ export function createLevelRuntime(opts) {
     terrain: [],
     actor: null,
     props: [],
+    activeProp: 0,
     plates: [],
     creatures: [],
     activeCreature: null,
@@ -124,22 +136,28 @@ export function createLevelRuntime(opts) {
   if (level.actors && level.actors.length) state.actor = spawnWalkerBody(level.actors[0], world);
 
   // ---- 道具（关2 的南瓜） ----
-  for (const p of level.props || []) {
+  // 失败时**不销毁旧南瓜**（D26）：它留在停下的地方，只在原位再长一颗新的。
+  // 理由：重生是这个游戏里唯一会拿走玩家东西的操作，能少拿一次就少拿一次。
+  function createProp(def, isRespawn) {
     const mat = MATERIALS.pumpkin;
-    const body = MATTER_RT.Bodies.rectangle(p.x, p.y, p.w, p.h, {
+    const body = MATTER_RT.Bodies.rectangle(def.x, def.y, def.w, def.h, {
       label: 'prop', friction: mat.friction, frictionStatic: mat.frictionStatic,
       restitution: mat.restitution, frictionAir: mat.frictionAir == null ? 0.01 : mat.frictionAir,
     });
     MATTER_RT.Body.setDensity(body, DENSITY_PUMPKIN);   // 红线 L6：密度只在 materials.js 里写
     body.plugin = {
-      kind: p.kind, home: { x: p.x, y: p.y }, graceMs: p.graceMs || 0,
-      vx0: Number.isFinite(p.vx0) ? p.vx0 : null, stallMs: 0,
-      releaseOnSpawn: p.releaseOnSpawn === true,
+      kind: def.kind, home: { x: def.x, y: def.y }, graceMs: def.graceMs || 0,
+      vx0: Number.isFinite(def.vx0) ? def.vx0 : null, stallMs: 0, settleMs: 0,
+      releaseOnSpawn: def.releaseOnSpawn === true,
+      isRespawn: !!isRespawn,
     };
     if (body.plugin.graceMs > 0) MATTER_RT.Body.setStatic(body, true);
     world.addBody(body);
     state.props.push(body);
+    return body;
   }
+  for (const p of level.props || []) createProp(p, false);
+  state.activeProp = 0;
 
   // ---- 压板 ----
   for (const pl of level.plates || []) {
@@ -297,6 +315,36 @@ export function createLevelRuntime(opts) {
     emit('level:fail', { reason, failStreak: state.failStreak, hintLevel: state.hintLevel });
   }
 
+  /** 南瓜被判定为终态（碎 / 退回岸 / 站在造物上 / 卡沟壁）：报失败，并在原位再长一颗 */
+  function failProp(p, reason) {
+    if (p.plugin.verdict) return;
+    p.plugin.verdict = reason;
+    fail(reason);
+    // D26：旧南瓜**不销毁**，留在停下的地方；新的一颗回台沿原位。
+    const def = level.props[0];
+    if (def) createProp(def, true);
+    state.activeProp = state.props.length - 1;
+  }
+
+  /**
+   * 南瓜底下第一块支撑是不是造物（梁顶 / 团块顶）。
+   * 不能只做射线：射线只取"下方第一块"，会把**压在南瓜上**的造物也算进来（实测误判）。
+   * 这里直接按几何判：造物顶面必须在南瓜底面下方 14px 内、且水平投影有重叠。
+   */
+  function supportIsCreature(p) {
+    const bottom = p.bounds.max.y;
+    for (const c of state.creatures) {
+      for (const b of c.bodies) {
+        if (b.isStatic) continue;
+        const dy = b.bounds.min.y - bottom;
+        if (dy < -2 || dy > 14) continue;
+        const overlap = Math.min(b.bounds.max.x, p.bounds.max.x) - Math.max(b.bounds.min.x, p.bounds.min.x);
+        if (overlap > 6) return true;
+      }
+    }
+    return false;
+  }
+
   function updateWalker(dtMs) {
     const a = state.actor;
     if (!a) return;
@@ -367,25 +415,46 @@ export function createLevelRuntime(opts) {
       const p = state.props[g.propIndex || 0];
       if (p && p.position.x >= g.x) win('prop-delivered');
     } else if (g.type === 'propInZone') {
-      // 关2：收货口是一个区域，不是一个 x 坐标。
-      // 进去 = 成功；在沟底停稳但在区域外 = 砸在沟底石头上 = 碎（失败）。
+      // ── 关2：**一条判定 + 四个终态**（D24/D25）──────────────────────────────
+      // 判定只有一句：南瓜在**非收货口区域停止推进**并静止 → 失败。
+      // 位置不参与"判不判"，只参与"说哪句"。
       //
-      // [实测坑] g.y 是**南瓜中心**的判定高度，不是地面的高度：
-      // 沟底棚布面 y=470，南瓜 62 高 → 停稳时中心 y≈430（实测 426–435）。
-      // 早先写 460（"比地面低一点"）→ 永远不成立 → 关卡对任何解法都不可过（实测 25/25 timeout）。
-      // 所以门槛取 400（比台面 300 低一整个南瓜身位，且在停稳高度之上）。
+      // **顺序是硬要求**：进收货口的南瓜同样是静止的，先判静止就会把 win 判成 fail。
+      //   1 win  进收货口区域
+      //   2 碎   到沟底但落在石头/棚布外沿（已有流程）
+      //   3 fail-A 完全退回岸台面（右缘 ≤ 台沿）→ 不可推进
+      //   4 fail-B 停在造物顶面（梁顶/团块顶）→ 不可推进
+      //   5 fail-C 卡在沟壁（台面与沟底之间）→ 不可推进
+      //   6 仍部分悬空 + 静止 → **不判任何终态**：这是正常初始态，也是可继续的状态
       //
-      // [实测坑] 失败必须等它**慢下来**才判：下落途中 x 还在扫过口沿，
-      // 用瞬时 x 判会把"擦着口沿最后滚进去"的球误判成碎。
-      const p = state.props[g.propIndex || 0];
+      // "仍部分悬空"是位置事实而不是"动了多少"：造物垂直落下产生不了向右的水平推力，
+      // 所以右缘一旦退回到台沿以内就再也推不回来了 = 不可推进。反之擦碰 100px 也不判失败。
+      //
+      // 注：本关南瓜初始就是悬空态（164..226），所以开局的静止永远不会落进 3–5 —— 这条
+      // 依赖关卡几何。以后若有"南瓜初始就躺在岸上"的关，需要显式的 inPlay 标志。
+      const p = state.props[state.activeProp];
       if (!p) return;
-      if (p.position.y < g.y) {
-        if (p.position.y < 260) state.propSmashed = false;   // 南瓜被重置回台上，标记复位
+      const speed = Math.hypot(p.velocity.x, p.velocity.y);
+      const spin = Math.abs(p.angularVelocity);
+      const slow = speed < SETTLE_V && spin < SETTLE_W;
+      p.plugin.settleMs = slow ? (p.plugin.settleMs || 0) + FIXED_STEP_MS : 0;
+      const settled = p.plugin.settleMs >= SETTLE_MS;
+
+      // 1 win
+      if (p.position.y >= g.y && p.position.x >= g.x1 && p.position.x <= g.x2) { win('prop-caught'); return; }
+      // 2 碎
+      if (p.position.y >= g.y) {
+        if (settled) failProp(p, 'prop-smashed');
         return;
       }
-      if (p.position.x >= g.x1 && p.position.x <= g.x2) { win('prop-caught'); return; }
-      const speed = Math.hypot(p.velocity.x, p.velocity.y);
-      if (speed < SETTLE_SPEED && !state.propSmashed) { state.propSmashed = true; fail('prop-smashed'); }
+      if (!settled) return;
+      // 3 fail-A 完全退回岸台面
+      if (p.bounds.max.x <= CHASM_RIM_X + 1 && p.position.y < PROP_FLOOR_Y) { failProp(p, 'prop-back-on-bank'); return; }
+      // 4 fail-B 停在造物顶面
+      if (supportIsCreature(p)) { failProp(p, 'prop-on-creature'); return; }
+      // 5 fail-C 卡在沟壁（台面与沟底之间）
+      if (p.position.y > 320 && p.position.y < PROP_FLOOR_Y) { failProp(p, 'prop-wedged'); return; }
+      // 6 仍悬空 / 仍在台面上但没退回去 → 不判，等玩家继续
     } else if (g.type === 'plateSustained') {
       const p = state.plates.find((x) => x.def.id === g.plateId) || state.plates[0];
       if (p && p.on) win('plate-sustained');
@@ -453,17 +522,19 @@ export function createLevelRuntime(opts) {
   function updatePropReset() {
     const limit = level.resetPropIfBelowY;
     if (limit == null) return;
-    for (const p of state.props) {
-      if (p.position.y > limit) {
-        MATTER_RT.Body.setPosition(p, p.plugin.home);
-        MATTER_RT.Body.setVelocity(p, { x: 0, y: 0 });
-        MATTER_RT.Body.setAngle(p, 0);
-        MATTER_RT.Body.setAngularVelocity(p, 0);
-        p.plugin.graceMs = 1400;
-        MATTER_RT.Body.setStatic(p, true);
-        fail('prop-lost');
-        resetActorForRetry();
-      }
+    for (const p of state.props.slice()) {
+      if (p.position.y <= limit || p.plugin.verdict) continue;
+      // 掉出世界了：这一颗确实留不住（它不是"停在哪"，是没了），所以从世界里移走再补一颗。
+      p.plugin.verdict = 'prop-lost';
+      world.removeBody(p);
+      const i = state.props.indexOf(p);
+      if (i >= 0) state.props.splice(i, 1);
+      state.activeProp = Math.max(0, state.activeProp - (i >= 0 && i < state.activeProp ? 1 : 0));
+      fail('prop-lost');
+      const def = level.props[0];
+      if (def) createProp(def, true);
+      state.activeProp = state.props.length - 1;
+      resetActorForRetry();
     }
   }
 
@@ -556,7 +627,7 @@ export function createLevelRuntime(opts) {
         id: p.def.id, load: p.load, threshold: p.def.threshold, holdMs: p.holdMs, on: p.on,
       })),
       actorPos: state.actor ? { x: state.actor.body.position.x, y: state.actor.body.position.y } : null,
-      propPos: state.props[0] ? { x: state.props[0].position.x, y: state.props[0].position.y } : null,
+      propPos: state.props[state.activeProp] ? { x: state.props[state.activeProp].position.x, y: state.props[state.activeProp].position.y } : null,
       hints: level.hints,
       guides: level.guides || [],
       degradeLog: state.degradeLog.slice(-5),

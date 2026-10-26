@@ -12,7 +12,7 @@ import { SAVE_KEY_PROGRESS, SAVE_SCHEMA_VERSION, loadProgress, saveProgress } fr
 import { createLocalStorageSaveStore } from './platform/local-storage-save-store.js';
 import { createCanvasSurface, createStaticLayer } from './render/canvas.js';
 import { drawFarmer, drawFreehandStroke, drawPaper } from './render/handdrawn.js';
-import { chipIndexAt, drawHud, headerButtonAt } from './render/hud.js';
+import { chipIndexAt, drawHud, headerButtonAt, pickFailHint } from './render/hud.js';
 import { createStrokeCapture } from './stroke/capture.js';
 import { analyzeStrokeGroup } from './stroke/classify.js';
 import { createPhysicsWorld } from './physics/world.js';
@@ -207,8 +207,12 @@ export function boot() {
     AudioBus.play('fail');
     view.failFlash = 1;
     const lv = view.level;
+    // 终态台词优先（D24/D25）：位置决定说哪句，判定只有一条。
+    // 有终态台词的失败**不再叠加暗示文字**——两句话叠在一起就是在教玩家读术语。
+    const endLine = lv.failLines && lv.failLines[payload.reason];
+    if (endLine) { say(endLine, 2600); return; }
     const hints = lv.failHints || [];
-    const t = hints[Math.min(hints.length - 1, Math.max(0, (payload.hintLevel || 1) - 1))];
+    const t = pickFailHint(hints, payload.hintLevel || 1, view.snapshot && view.snapshot.creature && view.snapshot.creature.form);
     if (t) toast(t, 2600);
     else if (lv.lines.failStreak) say(lv.lines.failStreak, 2400);
   }
@@ -341,10 +345,12 @@ export function boot() {
       ctx.fill();
       ctx.restore();
     }
-    // 提示轮廓（只在第一次失败后出现）
-    const showHint = (view.snapshot && view.snapshot.hintLevel > 0) && lv.hints && lv.hints.beamOutline;
-    if (showHint) {
-      const b = lv.hints.beamOutline;
+    // 提示轮廓：关1 画桥位（beamOutline），关2 画**悬空那半边**（dropZone，第 2 次失败起）。
+    // 关2 不再画桥：梁已经是合法解，画一座桥等于教玩家画非主解，而本关的教学是"砸哪儿"。
+    const hintShape = lv.hints && (lv.hints.dropZone || lv.hints.beamOutline);
+    const hintFrom = (hintShape && hintShape.fromHint) || 1;
+    if (view.snapshot && view.snapshot.hintLevel >= hintFrom && hintShape) {
+      const b = hintShape;
       ctx.save();
       ctx.setLineDash([6, 5]);
       ctx.strokeStyle = 'rgba(80,120,90,0.8)';
