@@ -1472,20 +1472,16 @@ const MATERIALS = {
   slope:  { friction: 0.9, frictionStatic: 1.0, restitution: 0.02 },
   metal:  { friction: 0.4, frictionStatic: 0.5, restitution: 0.1 },
   /**
-   * 南瓜：friction 必须为 0，否则它在任何地面都被“粘”住。
-   * 依据（实测 tests/probe2.mjs）：matter 的 pair.friction = min(a,b)、pair.frictionStatic = max(a,b)，
-   * 求解时相乘，所以只要接触对里有一方 friction>0，切向速度就被清零（0.05 与 0.9 停止距离都是 ≈8px）。
-   * friction=0 时它才真的滑得起来 —— 这也是「圆的/滚的东西」在本引擎里的等价写法。
-   * frictionAir 是它唯一的减速来源（决定能滑多远），[待实测标定]。
+   * 南瓜：`friction = 0.5`。
+   *
+   * 历史（别改回去）：这里曾经是 `friction: 0`，理由是"matter 的 pair.friction = min(a,b) 再相乘，
+   * 只要接触对里有一方 friction>0，切向速度就被清零"，所以只有 0 才滑得起来。
+   * 那是**旧关2（沿坡滑）**的前提。新关2 的解法是"压/砸悬空半边把它顶翻"，完全不依赖滑动，
+   * 而 `friction: 0` 会让南瓜在台面上像冰一样自己滑走、还把"方的东西推得动"这个直觉搞坏。
+   * 已随关2 重建同一包清成 0.5（实测：关2 压悬空半边 10/10 过关，静置 3s 漂移 0.12px）。
+   * frictionAir 仍偏小，是因为它要能被顶翻、又不该在空中被吹走，[待实测标定]。
    */
-  /**
-   * [债-1] `friction: 0` 已判"该删"（团队已裁定，不是标定问题），但**删除与关 2 重建必须同一包**：
-   * 差包里把 0 改成 0.5 后实测关 2 立刻不可通（南瓜不再自己滑出高台，`smoke-browser` 卡在
-   * `ch1-02 / playing / failStreak 3`）。所以这里**暂时保留 0**，等关 2 按设计新案
-   * （圆滚 + 团块逐级跌 + 长条对照组，无"沿坡滑"解法）重建时一并改成 0.5。
-   * 理由写在代码里，是因为"为什么还留着这个 0"比"这个 0 是多少"更容易被忘掉。
-   */
-  pumpkin: { friction: 0, frictionStatic: 0, restitution: 0, frictionAir: 0.002 },
+  pumpkin: { friction: 0.5, frictionStatic: 0.6, restitution: 0, frictionAir: 0.002 },
   ice:    { friction: 0.08, frictionStatic: 0.05, restitution: 0.0 },
 };
 
@@ -2217,6 +2213,8 @@ const LANDING_MAX_FALL_SPEED = 3.4;   // px/step，落地缓冲期内的下落�
 const LANDING_FRAMES = 26;
 const ACTOR_PIT_FAIL_MS = 2500;
 const PLATE_LIGHT_FAIL_MS = 2500;
+/** 南瓜"已经停稳"的速度门槛（px/step）：低于它才算落点已定，才判砸碎 */
+const SETTLE_SPEED = 1.2;
 
 function clampNum(v, lo, hi) { return v < lo ? lo : v > hi ? hi : v; }
 
@@ -2322,7 +2320,7 @@ function createLevelRuntime(opts) {
       label: 'prop', friction: mat.friction, frictionStatic: mat.frictionStatic,
       restitution: mat.restitution, frictionAir: mat.frictionAir == null ? 0.01 : mat.frictionAir,
     });
-    MATTER_RT.Body.setDensity(body, 0.0035);
+    MATTER_RT.Body.setDensity(body, DENSITY_PUMPKIN);   // 红线 L6：密度只在 materials.js 里写
     body.plugin = {
       kind: p.kind, home: { x: p.x, y: p.y }, graceMs: p.graceMs || 0,
       vx0: Number.isFinite(p.vx0) ? p.vx0 : null, stallMs: 0,
@@ -2560,15 +2558,24 @@ function createLevelRuntime(opts) {
       if (p && p.position.x >= g.x) win('prop-delivered');
     } else if (g.type === 'propInZone') {
       // 关2：收货口是一个区域，不是一个 x 坐标。
-      // 进去 = 成功；落到同一高度但在区域外 = 砸在沟底石头上 = 碎（失败），两者同帧互斥。
+      // 进去 = 成功；在沟底停稳但在区域外 = 砸在沟底石头上 = 碎（失败）。
+      //
+      // [实测坑] g.y 是**南瓜中心**的判定高度，不是地面的高度：
+      // 沟底棚布面 y=470，南瓜 62 高 → 停稳时中心 y≈430（实测 426–435）。
+      // 早先写 460（"比地面低一点"）→ 永远不成立 → 关卡对任何解法都不可过（实测 25/25 timeout）。
+      // 所以门槛取 400（比台面 300 低一整个南瓜身位，且在停稳高度之上）。
+      //
+      // [实测坑] 失败必须等它**慢下来**才判：下落途中 x 还在扫过口沿，
+      // 用瞬时 x 判会把"擦着口沿最后滚进去"的球误判成碎。
       const p = state.props[g.propIndex || 0];
       if (!p) return;
       if (p.position.y < g.y) {
-        if (p.position.y < 200) state.propSmashed = false;   // 南瓜被重置回台上，标记复位
+        if (p.position.y < 260) state.propSmashed = false;   // 南瓜被重置回台上，标记复位
         return;
       }
-      if (p.position.x >= g.x1 && p.position.x <= g.x2) win('prop-caught');
-      else if (!state.propSmashed) { state.propSmashed = true; fail('prop-smashed'); }
+      if (p.position.x >= g.x1 && p.position.x <= g.x2) { win('prop-caught'); return; }
+      const speed = Math.hypot(p.velocity.x, p.velocity.y);
+      if (speed < SETTLE_SPEED && !state.propSmashed) { state.propSmashed = true; fail('prop-smashed'); }
     } else if (g.type === 'plateSustained') {
       const p = state.plates.find((x) => x.def.id === g.plateId) || state.plates[0];
       if (p && p.on) win('plate-sustained');
@@ -2612,6 +2619,9 @@ function createLevelRuntime(opts) {
   }
 
   function updatePropStall(dtMs) {
+    // 老关2 用"南瓜卡住"当失败（那时解法是让它滑）；新关2 里**南瓜不动才是正常初始状态**，
+    // 所以只在关卡显式声明 propStallFails=true 时才判（goal.type==='propInZone' 的关不判）。
+    if (level.goal && level.goal.type === 'propInZone') return;
     for (const p of state.props) {
       if (!p.plugin || p.isStatic) continue;
       const speed = Math.hypot(p.velocity.x, p.velocity.y);
@@ -3205,77 +3215,89 @@ const LEVEL_CH1_01 = {
 ;
 /* src/level/levels/ch1-02.js */
 /**
- * src/level/levels/ch1-02.js —— 关2 滚下去的南瓜（难度 2，无机关）
+ * src/level/levels/ch1-02.js —— 关2 滚不动的南瓜（难度 2，无机关）
  *
- * ── 与 levels.md 的偏差（必读，README「与设计案的偏差」逐条同步）──────────────
- * levels.md 的三条参考解法都以「让南瓜滑/滚起来」为前提：① 圆轮 ② 变硬滑道 ③ 变硬雪橇。
- * 实测 matter-js 的摩擦求解器（tests/probe2.mjs，全部实测数据，不是推测）：
- *   · pair.friction = min(a,b)、pair.frictionStatic = max(a,b)，求解时相乘
- *     → 接触对里只要有一方 friction>0，切向相对速度就被清零：0.05 与 0.9 的停止距离都是 ≈8px
- *   · 只有 friction 恒为 0 才真的滑得起来（「圆的东西」在本引擎里的等价写法）
- *   · friction=0 的滑行体**任何 ≥5px 的台阶都会把它彻底卡死**（实测 5px 就停住）
- * 结论：本引擎里不存在「平地架桥 → 南瓜一路滑过去」——玩家画的梁一定会比岸面高一个梁厚。
+ * 判定只有一句话：**把南瓜弄下台沿，让它落进沟底的收货口**。
  *
- * 本关只用一条可靠的物理事实：**南瓜只会往下走**。关卡几何为此专门设计：
- *   南瓜地平台(top 300) ── 落差 60px ──▶ 玩家架的桥（搭在两侧河岸 top 360 上，桥面 ≈351）
- *                                        ── 落差 9px ──▶ 集市河岸(top 360)
- *   · 玩家不架桥 → 南瓜滑出平台直接落进小河 → 重来（不惩罚，只是提示）
- *   · 桥只要「两头都搭到河岸上」就成立；桥面高度必须低于平台，所以桥越薄越贴、越厚越靠下，
- *     两种都成立 —— 这就是为什么「梁」和「厚团块」都能过，而「薄得像纸的团块」反而会卡住。
- *   → 教学点从「形状决定形态」偏向「强度」：南瓜落地 13.4kg，中缝会折的软梁接不住它，
- *     必须「变硬」把它冻成一块整的。
- *   → 「会滚」是**干扰芯片**：南瓜本身就是 friction=0 的滑行体，给桥面降摩擦毫无变化。
- *     已如实记录（README），不承当必需路径。
+ * ── 落位（D22）：重心 x=195，南瓜 164..226，悬空 26px ≈42% ─────────────────────
+ * 这不是拍出来的数，是被"能不能过"逼出来的。实测（tests/l2-passable.mjs，每种造物 5 个落点）：
+ *   · 不悬空（重心 165，南瓜 134..196）：25 次尝试 **0 胜**，南瓜全程不动（13.45 的质量推不动）；
+ *   · 悬空 26px（重心 195，本文件）：**19/25 胜**，南瓜落点 x 238–248、y 426–435，全在收货口里。
+ *   ⇒ 悬空是**唯一**让"压/砸悬空半边 → 重心越过台沿 → 翻下去"这条链成立的几何。
+ *
+ * ── 为什么"长条对照组"的原始判据（南瓜位移 ≤2px）在这个关卡里不可能成立 ──────────
+ * 两条实测事实合起来排除所有落位：
+ *   ① 造物从 spawnY=84 **自由落体**，落点 x = 笔画质心 x（见 runtime.spawnCreature）。
+ *      所以一根"横跨沟"的梁，质心必然落在沟中间 265 附近 —— 它天然横在两床上，这是梁失败的原因。
+ *   ② 但同一根梁的**左端**在静止时落在 x≈172–178（实测 t=5: 168..178，t=20: 159..178）：
+ *      它从天上下来的一路上都盖住 172 往右的整段。
+ *   ⇒ 要让南瓜"完全不位移"，南瓜必须整块都在 172 左边（重心 ≤134）；而 ≤134 就一定不悬空，
+ *     一定推不动（事实 A 的 0 胜）。两个条件互斥，**判据 1 与"关卡可过"不可兼得**。
+ *     实测数字：重心 140 → 位移 3.29 / 11.78px（t=5 / t=20）；重心 195 → 位移 174.62 / 173.30px。
+ *   已上报设计侧，改为"梁**过不了关**"这一条可验证的判据（见 README 关2 状态）。
+ *
+ *   "梁的顶面 = 台面 − t、永远低于南瓜底面"这句话**只对放好之后的梁成立**：
+ *   梁要在两床上卧稳，顶面就是 300 − t（t=5/20 → 295/280），确实低于南瓜底 300。
+ *   但它在放好之前要先从 y=84 掉下来，那一段它比南瓜高得多。
+ *   「顶面 = 300 − t」和「质心落在沟中间」这两条合起来才是完整的对照组证明。
+ *
+ * ── 三条路径 ───────────────────────────────────────────────────────────────
+ *   ① 圆 → 轮：砸/压在悬空半边（x 200..226 上空）→ 重心越过台沿 → 落进收货口
+ *   ② 团块（变硬）：同一落点，质量更大更好压 → 兜底，但真能用
+ *   ③ 会滚：上滚更远，本关只作预演，不承当解法
+ *
+ * ── 一条都不建的（D21/D22）──────────────────────────────────────────────────
+ *   短坡（8–12°）、两级台阶、台沿矮唇、夹槽支点、240px 笔画上限、关3 的撬杠。
+ *   理由：方南瓜在 8–12° 有摩擦的坡上不会动（绕棱翻倒要 >45°），那条坡只会把两条真解同时卡死。
  */
 const LEVEL_CH1_02 = {
   id: 'ch1-02',
   chapter: 1,
-  title: '滚不动的南瓜',   // 定案换名：方形南瓜转不满一圈是设定（"它是方的"就是笑点）
+  title: '滚不动的南瓜',
   subtitle: '它不肯走。它是方的。',
   chips: ['harden', 'roll'],
   spawnY: 84,
   terrain: [
-    { x: 115, y: 400, w: 230, h: 80, mat: 'ground' },   // 左岸 顶面 360，x 0..230
-    { x: 85, y: 330, w: 170, h: 60, mat: 'ground' },    // 南瓜地平台 顶面 300，x 0..170
-    { x: 385, y: 400, w: 90, h: 80, mat: 'ground' },    // 右岸（山脚集市）顶面 360，x 340..430
+    { x: 100, y: 385, w: 200, h: 170, mat: 'ground' },   // 左岸：台面 300，x 0..200
+    { x: 380, y: 385, w: 100, h: 170, mat: 'ground' },   // 右岸：台面 300，x 330..430
+    { x: 200, y: 481, w: 22, h: 22, mat: 'ground' },     // 沟底石头（左）189..211
+    { x: 297.5, y: 481, w: 25, h: 22, mat: 'ground' },   // 沟底石头（右）285..310
+    { x: 245, y: 481, w: 80, h: 22, mat: 'ground' },     // 收货口棚布面 y=470，开口 205..285
+    { x: 202, y: 462, w: 26, h: 10, mat: 'ground', angle: 0.55 },   // 软漏斗微翘（左）
+    { x: 288, y: 462, w: 26, h: 10, mat: 'ground', angle: -0.55 },  // 软漏斗微翘（右）
   ],
-  actors: [],
+  actors: [{ kind: 'walker', x: 380, y: 286, targetX: 350, label: '农夫' }],
   props: [{
-    kind: 'pumpkin', x: 80, y: 269, w: 62, h: 62, label: '南瓜',
-    graceMs: 999999,      // 先钉住，等玩家把桥架好再放手（releaseOnSpawn 改成 1.5s）
-    releaseOnSpawn: true,
-    vx0: 0.8,             // 农夫推的那一把：很小，但它再也不停
+    kind: 'pumpkin', x: 195, y: 269, w: 62, h: 62, label: '南瓜',
+    graceMs: 0, releaseOnSpawn: false, vx0: null,
   }],
   plates: [],
-  goal: { type: 'propReach', propIndex: 0, x: 372 },
-  resetPropIfBelowY: 560,
-  propReleaseDelayMs: 1500,   // 造物落地后 1.5s 南瓜才开始滑
-  guides: [{ x: 230 }, { x: 340 }],
+  // 判定高度是**南瓜中心**的高度（沟底停稳实测 y 426–435），不是地面高度。见 runtime.checkGoal。
+  goal: { type: 'propInZone', propIndex: 0, x1: 205, x2: 285, y: 400 },
+  resetPropIfBelowY: 620,
+  guides: [{ x: 200, y: 300 }, { x: 330, y: 300 }],
   hints: {
-    highlight: [{ x: 230, y: 360, r: 22 }, { x: 340, y: 360, r: 22 }],
-    beamOutline: { x1: 182, y1: 388, x2: 356, y2: 392 },
+    // 第 2/3 次失败：只圈**悬空的那半边**（不是桥、不是整个南瓜）
+    beamOutline: { x1: 200, y1: 240, x2: 226, y2: 240 },
+    highlight: [{ x: 214, y: 258, r: 24 }],
   },
   scenery: [
-    { kind: 'line', x1: 0, y1: 300, x2: 170, y2: 300, width: 2 },
-    { kind: 'line', x1: 170, y1: 300, x2: 170, y2: 360, width: 2 },
-    { kind: 'line', x1: 0, y1: 360, x2: 230, y2: 360, width: 2 },
-    { kind: 'line', x1: 340, y1: 360, x2: 430, y2: 360, width: 2 },
-    { kind: 'line', x1: 230, y1: 372, x2: 340, y2: 372, width: 1.5, dash: true },
-    { kind: 'text', x: 285, y: 512, text: '（小河，南瓜掉下去就成鱼了）', size: 10, align: 'center' },
-    { kind: 'rect', x: 400, y: 334, w: 44, h: 26 },
-    { kind: 'text', x: 400, y: 350, text: '集市', size: 10, align: 'center' },
-    { kind: 'text', x: 60, y: 286, text: '南瓜地（高）', size: 10, align: 'center' },
+    { kind: 'chasm', x1: 200, x2: 330, y: 300, depth: 170 },
+    { kind: 'line', x1: 0, y1: 300, x2: 200, y2: 300, width: 2.5 },
+    { kind: 'line', x1: 330, y1: 300, x2: 430, y2: 300, width: 2.5 },
+    { kind: 'rect', x: 245, y: 462, w: 84, h: 16 },
+    { kind: 'crops', x1: 212, x2: 278, y: 470, n: 3, h: 7 },
+    { kind: 'text', x: 245, y: 447, text: '收货口', size: 10, align: 'center', tone: 'light' },
+    { kind: 'text', x: 200, y: 497, text: '石头', size: 9, align: 'center', tone: 'light' },
+    { kind: 'text', x: 298, y: 497, text: '石头', size: 9, align: 'center', tone: 'light' },
+    { kind: 'text', x: 96, y: 286, text: '南瓜地（它是方的）', size: 10, align: 'center' },
+    { kind: 'text', x: 380, y: 286, text: '集市（在下面）', size: 10, align: 'center' },
   ],
   lines: { intro: 'l2_intro', win: 'l2_win', failStreak: 'common_fail2', stamp: null },
   failHints: [
-    // 第 1 次失败：**按形态分岔**（关2 的方向型对照）。
-    // 玩家刚在关1 学会"长条=桥"，进关2 第一反应必画梁——这一句要让他试一次就换方向，
-    // 而不是反复重画梁（那样对照组就白设了）。纯文字，不朗读（语音位在"连续失败 2 次"）。
-    { beam: '梁撑得住。南瓜我抬不动。', other: '它卡在边沿上，得有人顶它一下。' },
-    '中缝会折的软梁接不住 13kg 的南瓜，落地就塌——点「变硬」把它冻成一块整的。',
-    '梁或团块都行，两头压住两岸，再点「变硬」。团块别画太厚，顶到高台边会挡住南瓜。',
-    // ↑ 第 2/3 条仍是**旧几何**的文案；关2 按 B 版重建时同步换成
-    //   「坡上两级自然起伏发光」+「轮的轮廓虚线」两条暗示（见 levels.md 关2 改版）。
+    { beam: '梁撑得住。可它够不着南瓜。', other: '它卡在边沿上，得往下压它。' },
+    '它是方的，自己不会走。造物往下扔，砸到它悬空的那半边。',
+    '轮子或硬团块都行：落在 x 200–226 的上空，让它砸下来。',
   ],
 };
 ;

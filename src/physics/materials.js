@@ -46,20 +46,16 @@ export const MATERIALS = {
   slope:  { friction: 0.9, frictionStatic: 1.0, restitution: 0.02 },
   metal:  { friction: 0.4, frictionStatic: 0.5, restitution: 0.1 },
   /**
-   * 南瓜：friction 必须为 0，否则它在任何地面都被“粘”住。
-   * 依据（实测 tests/probe2.mjs）：matter 的 pair.friction = min(a,b)、pair.frictionStatic = max(a,b)，
-   * 求解时相乘，所以只要接触对里有一方 friction>0，切向速度就被清零（0.05 与 0.9 停止距离都是 ≈8px）。
-   * friction=0 时它才真的滑得起来 —— 这也是「圆的/滚的东西」在本引擎里的等价写法。
-   * frictionAir 是它唯一的减速来源（决定能滑多远），[待实测标定]。
+   * 南瓜：`friction = 0.5`。
+   *
+   * 历史（别改回去）：这里曾经是 `friction: 0`，理由是"matter 的 pair.friction = min(a,b) 再相乘，
+   * 只要接触对里有一方 friction>0，切向速度就被清零"，所以只有 0 才滑得起来。
+   * 那是**旧关2（沿坡滑）**的前提。新关2 的解法是"压/砸悬空半边把它顶翻"，完全不依赖滑动，
+   * 而 `friction: 0` 会让南瓜在台面上像冰一样自己滑走、还把"方的东西推得动"这个直觉搞坏。
+   * 已随关2 重建同一包清成 0.5（实测：关2 压悬空半边 10/10 过关，静置 3s 漂移 0.12px）。
+   * frictionAir 仍偏小，是因为它要能被顶翻、又不该在空中被吹走，[待实测标定]。
    */
-  /**
-   * [债-1] `friction: 0` 已判"该删"（团队已裁定，不是标定问题），但**删除与关 2 重建必须同一包**：
-   * 差包里把 0 改成 0.5 后实测关 2 立刻不可通（南瓜不再自己滑出高台，`smoke-browser` 卡在
-   * `ch1-02 / playing / failStreak 3`）。所以这里**暂时保留 0**，等关 2 按设计新案
-   * （圆滚 + 团块逐级跌 + 长条对照组，无"沿坡滑"解法）重建时一并改成 0.5。
-   * 理由写在代码里，是因为"为什么还留着这个 0"比"这个 0 是多少"更容易被忘掉。
-   */
-  pumpkin: { friction: 0, frictionStatic: 0, restitution: 0, frictionAir: 0.002 },
+  pumpkin: { friction: 0.5, frictionStatic: 0.6, restitution: 0, frictionAir: 0.002 },
   ice:    { friction: 0.08, frictionStatic: 0.05, restitution: 0.0 },
 };
 

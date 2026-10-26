@@ -9,7 +9,7 @@
  *   → { spawnCreature, setAbility, toggleAbility, step, snapshot, destroy, state }
  */
 import { DESIGN_W } from '../core/config.js';
-import { ACTOR, FIXED_STEP_MS, MATERIALS, PLATE } from '../physics/materials.js';
+import { ACTOR, DENSITY_PUMPKIN, FIXED_STEP_MS, MATERIALS, PLATE } from '../physics/materials.js';
 import { buildCreatureBody } from '../physics/body-factory.js';
 import { composeAbilities } from '../abilities/compose.js';
 import { BodyBudget } from '../physics/budget.js';
@@ -23,6 +23,8 @@ const LANDING_MAX_FALL_SPEED = 3.4;   // px/step，落地缓冲期内的下落�
 const LANDING_FRAMES = 26;
 const ACTOR_PIT_FAIL_MS = 2500;
 const PLATE_LIGHT_FAIL_MS = 2500;
+/** 南瓜"已经停稳"的速度门槛（px/step）：低于它才算落点已定，才判砸碎 */
+const SETTLE_SPEED = 1.2;
 
 function clampNum(v, lo, hi) { return v < lo ? lo : v > hi ? hi : v; }
 
@@ -128,7 +130,7 @@ export function createLevelRuntime(opts) {
       label: 'prop', friction: mat.friction, frictionStatic: mat.frictionStatic,
       restitution: mat.restitution, frictionAir: mat.frictionAir == null ? 0.01 : mat.frictionAir,
     });
-    MATTER_RT.Body.setDensity(body, 0.0035);
+    MATTER_RT.Body.setDensity(body, DENSITY_PUMPKIN);   // 红线 L6：密度只在 materials.js 里写
     body.plugin = {
       kind: p.kind, home: { x: p.x, y: p.y }, graceMs: p.graceMs || 0,
       vx0: Number.isFinite(p.vx0) ? p.vx0 : null, stallMs: 0,
@@ -366,15 +368,24 @@ export function createLevelRuntime(opts) {
       if (p && p.position.x >= g.x) win('prop-delivered');
     } else if (g.type === 'propInZone') {
       // 关2：收货口是一个区域，不是一个 x 坐标。
-      // 进去 = 成功；落到同一高度但在区域外 = 砸在沟底石头上 = 碎（失败），两者同帧互斥。
+      // 进去 = 成功；在沟底停稳但在区域外 = 砸在沟底石头上 = 碎（失败）。
+      //
+      // [实测坑] g.y 是**南瓜中心**的判定高度，不是地面的高度：
+      // 沟底棚布面 y=470，南瓜 62 高 → 停稳时中心 y≈430（实测 426–435）。
+      // 早先写 460（"比地面低一点"）→ 永远不成立 → 关卡对任何解法都不可过（实测 25/25 timeout）。
+      // 所以门槛取 400（比台面 300 低一整个南瓜身位，且在停稳高度之上）。
+      //
+      // [实测坑] 失败必须等它**慢下来**才判：下落途中 x 还在扫过口沿，
+      // 用瞬时 x 判会把"擦着口沿最后滚进去"的球误判成碎。
       const p = state.props[g.propIndex || 0];
       if (!p) return;
       if (p.position.y < g.y) {
-        if (p.position.y < 200) state.propSmashed = false;   // 南瓜被重置回台上，标记复位
+        if (p.position.y < 260) state.propSmashed = false;   // 南瓜被重置回台上，标记复位
         return;
       }
-      if (p.position.x >= g.x1 && p.position.x <= g.x2) win('prop-caught');
-      else if (!state.propSmashed) { state.propSmashed = true; fail('prop-smashed'); }
+      if (p.position.x >= g.x1 && p.position.x <= g.x2) { win('prop-caught'); return; }
+      const speed = Math.hypot(p.velocity.x, p.velocity.y);
+      if (speed < SETTLE_SPEED && !state.propSmashed) { state.propSmashed = true; fail('prop-smashed'); }
     } else if (g.type === 'plateSustained') {
       const p = state.plates.find((x) => x.def.id === g.plateId) || state.plates[0];
       if (p && p.on) win('plate-sustained');
@@ -418,6 +429,9 @@ export function createLevelRuntime(opts) {
   }
 
   function updatePropStall(dtMs) {
+    // 老关2 用"南瓜卡住"当失败（那时解法是让它滑）；新关2 里**南瓜不动才是正常初始状态**，
+    // 所以只在关卡显式声明 propStallFails=true 时才判（goal.type==='propInZone' 的关不判）。
+    if (level.goal && level.goal.type === 'propInZone') return;
     for (const p of state.props) {
       if (!p.plugin || p.isStatic) continue;
       const speed = Math.hypot(p.velocity.x, p.velocity.y);
