@@ -45,12 +45,18 @@ export const LINES = {
  */
 export function createLineQuota(max = 2) {
   let said = new Map();
+  /** 额度查得到底了没有（**只查不扣**）——用来把"扣"推迟到真正交付那一刻 */
+  const exhausted = (id) => (said.get(id) || 0) >= max;
+  /** 真正交付了才扣（被拦下的一次都不许扣） */
+  const take = (id) => { said.set(id, (said.get(id) || 0) + 1); };
+  /** 便捷组合：查+扣在同一刻（只适合"请求即交付"的场景，例如纯文字） */
   const allow = (id) => {
-    const n = said.get(id) || 0;
-    if (n >= max) return false;
-    said.set(id, n + 1);
+    if (exhausted(id)) return false;
+    take(id);
     return true;
   };
+  allow.exhausted = exhausted;
+  allow.take = take;
   /** 进关时调用：只给"每关"那一档用，整局档永远不 reset */
   allow.reset = () => { said = new Map(); };
   return allow;

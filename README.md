@@ -14,7 +14,7 @@ node tools/build.mjs                 # 生成 dist/game.html + 根目录 index.h
 - **自测（真浏览器，无需 npm 依赖）**：
   ```bash
   node tools/smoke-browser.mjs       # Edge headless + CDP：430×932，三关各用参考解法真的走通
-  node --test tests/core.test.mjs   # 19 条单元测试（几何/判定/能力/总线/存档迁移/台词闭集与禁止话术）
+  node --test tests/core.test.mjs   # 20 条单元测试（几何/判定/能力/总线/存档迁移/台词闭集与禁止话术）
   node --test tests/l2-verdicts.test.mjs  # 关2 终态判定表 7 条（构造状态，不靠玩法运气）
   node tools/check-single-file.mjs  # 单文件 13 条门禁
   node tests/tune.mjs               # 标定用：逐关逐画法打印物理轨迹
@@ -39,7 +39,7 @@ node tools/build.mjs                 # 生成 dist/game.html + 根目录 index.h
 
 | 文件 | 说明 |
 |---|---|
-| `dist/game.html` | 单文件游戏（291,741 B / 上限 600,000 B），4 个 MIT 库 + app + 许可正文全部内联 |
+| `dist/game.html` | 单文件游戏（293,436 B / 上限 600,000 B），4 个 MIT 库 + app + 许可正文全部内联 |
 | `index.html` | 同一份产物（构建通过断言后才复制，失败则不生成） |
 | `dist/smoke-l1..l3.png` | 430×932 竖屏实机截图（三关各一张） |
 | `vendor/` | curl 自 unpkg 落盘的 4 个库 + 4 份许可 + 聚合 `LICENSES.txt` |
@@ -129,8 +129,9 @@ L3 团块+变重 → 过关（1.8s, form=wheel）
 - **同句台词 ≤2 次**（附录 A），两个粒度：**整局**（形态台词、各关专属失败暗示）/ **每关**（跨关通用兜底句 `common_fail2`，进关 `reset()`）。
   兜底句必须按每关计——它是"任何没预料到的终态都还有一句话"的安全网，整局额度被前一关吃光，关3..关9 就只剩余光和静默。
   第 3 次起静默由"悬空半边发光 / 轮廓虚线"接手，**绝不许补同义句**（换句会被读成"判定变了"）。
-  配额是纯函数 `createLineQuota(max)`（带 `reset()`），粒度由 `isPerLevelLine(id)` 判定，两者都有单测：
-  `[true,true,false,false]` + "进关 reset 后又能说 2 次"——**粒度改错必须能被测试抓住**，而不是等人发现关3 以后没台词。
+  **扣额度的时序**：`exhausted()` 只查不扣、`take()` 在真正交付之后才扣（对齐 `audio-spec-v2` §583–585 的顺序：C5 → 只读配额预检 → C4 延后 → 起播才扣）。被音频层拦下的一次都不许扣，否则整局 2 次额度会被"没播出去"的句子烧光。
+  配额是纯函数 `createLineQuota(max)`（带 `reset()` / `exhausted()` / `take()`），粒度由 `isPerLevelLine(id)` 判定，两者都有单测：
+  `[true,true,false,false]` + "进关 reset 后又能说 2 次" + "被拦下的那次不扣"——**粒度与时序改错都必须能被测试抓住**，而不是等人发现关3 以后没台词。
 
 **两处真问题（本包修掉）**：
 1. 早先 `prop-stalled`（3 秒不动 = 失败）在新关里把**正常初始状态**判成失败，而南瓜被顶到岸上之后它又不报——两头都错。已删掉那条 stall 判据，换成上面这条位置判定。

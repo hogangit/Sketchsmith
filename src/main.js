@@ -86,15 +86,20 @@ export function boot() {
   let lastBubbleKey = '';
   let winTimer = 0;
 
-  function say(lineId, ms) {
+  /** 把一句台词交给"交付"：气泡一定出现（文字是信息通道），语音能不能起来由音频层决定 */
+  function showLine(lineId, ms) {
     const text = lineText(lineId);
-    if (!text) return;
+    if (!text) return false;
     view.bubble = { who: lineWho(lineId), text, until: mainNow() + (ms || 2600) };
     lastBubbleKey = lineId;
     // 有中文语音才出声；没有就静默走气泡（绝不拿英文嗓音念中文）
     AudioBus.speak(lineId, text);
     if (AudioBus.voiceMode === 'bubble') bus.emit('text:bubble', { lineId });
+    return true;
   }
+
+  /** 不设配额的场合（开场 / 成功 / 盖章）：这些句子每关最多一次，重复风险不在它们身上 */
+  function say(lineId, ms) { showLine(lineId, ms); }
 
   function toast(text, ms) {
     view.bubble = { who: '', text, until: mainNow() + (ms || 1800) };
@@ -107,14 +112,24 @@ export function boot() {
    *     否则前一关把额度吃光，关3..关9 的"没预料到的终态"就没有兜底了。
    * 静默不致命：视觉提示（悬空半边发光 / 轮廓虚线）会接手；**不许补同义句**，
    * 换句会被读成"判定变了"。
+   *
+   * **扣额度的时序**：`exhausted()` 只查不扣，`take()` 在真正交付之后才扣。
+   * 被音频层拦下（C4 延后 / C5 不在画面内 / 超时丢弃）的那一次**一次都不许扣** ——
+   * 否则整局 2 次额度会被三个"没播出去"的句子烧光，后面的关就没兜底了。
+   * [待音频契约] 现在 `AudioBus.speak()` 只返回 boolean（分不出"播了 / 被延后 / 被拦下"），
+   * 而气泡是必出的，所以当前交付点 = 气泡出现。等 audio-director 把 speak 的三态契约定下来，
+   * 这里改成 `if (voiceOutcome === 'played' || AudioBus.voiceMode === 'bubble') quota.take(id)`，
+   * 只动这一行——所以现在就把"查"和"扣"拆成两个口子。
    */
   const allowRunLine = createLineQuota(2);
   const allowLevelLine = createLineQuota(2);
   function sayCapped(lineId, ms) {
-    if (!lineText(lineId)) return;              // 表外不发声、不臆造
+    if (!lineText(lineId)) return false;         // 表外不发声、不臆造
     const quota = isPerLevelLine(lineId) ? allowLevelLine : allowRunLine;
-    if (!quota(lineId)) return;
-    say(lineId, ms || 2600);
+    if (quota.exhausted(lineId)) return false;   // 额度真用完才提前返回（其余一律走完交付）
+    showLine(lineId, ms || 2600);
+    quota.take(lineId);                          // 交付发生了才扣
+    return true;
   }
   /** 落地形状分岔台词：闭集、同句 ≤2 次（整局）、超额静默 */
   function sayFormLine(form) { sayCapped('form_' + form, 2200); }

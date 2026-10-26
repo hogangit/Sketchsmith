@@ -200,6 +200,22 @@ test('台词配额粒度：跨关兜底句按**每关**计（否则关3 之后�
     '进关 reset 之后必须又能说 2 次（这条不加，粒度改错没人发现）');
 });
 
+test('配额扣在"真正交付"时：被拦下的那次一次都不许扣', async () => {
+  const { createLineQuota } = await import(pathToFileURL(path.join(ROOT, 'src/text/lines.js')).href);
+  const q = createLineQuota(2);
+  const log = [];
+  // 第 1 次：音频层拦下（没交付）→ 不 take → 额度不能烧
+  const blocked = q.exhausted('common_fail2');
+  log.push(blocked ? 'blocked' : 'allowed-but-not-taken');
+  assert.equal(blocked, false, '第一次必须允许');
+  assert.equal(q.exhausted('common_fail2'), false, '没交付就不许扣额度');
+  // 第 2/3 次：真交付 → take
+  q.take('common_fail2'); q.take('common_fail2');
+  assert.equal(q.exhausted('common_fail2'), true, '真交付 2 次之后额度才用完');
+  // 反例保护：如果实现改成"请求即扣"，上面的 sequence 会变成 [false,true,true] 提前静默
+  assert.deepEqual(log, ['allowed-but-not-taken'], '拦下的那次不许记成已交付');
+});
+
 test('关2 失败暗示：逐字锁死 + 禁止话术黑名单 + 终态走兜底', async () => {
   const { LINES } = await import(pathToFileURL(path.join(ROOT, 'src/text/lines.js')).href);
   const lv = env.levels.l2.LEVEL_CH1_02;
