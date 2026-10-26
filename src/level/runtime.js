@@ -15,8 +15,10 @@ import { composeAbilities } from '../abilities/compose.js';
 import { BodyBudget } from '../physics/budget.js';
 import { MAX_ABILITIES_PER_CREATURE } from '../stroke/thresholds.js';
 
-/* MATTER 由 physics/world.js 在同一打包作用域声明（兜底拼接器 D3：顶层名全仓库唯一） */
+const MATTER_RT = typeof Matter !== 'undefined' ? Matter : globalThis.Matter;  // 本文件专用别名（兜底拼接器 D3：顶层名全仓库唯一）
 const CREATURE_DESPAWN_Y = 780;
+const MAX_LIVE_CREATURES = 2;     // N1：同时最多 2 个造物（试错-迭代不允许“一画就吞掉前一个”）
+const CREATURE_FADE_MS = 200;     // 被替换的那个淡出 200ms，不许瞬间消失
 const LANDING_MAX_FALL_SPEED = 3.4;   // px/step，落地缓冲期内的下落速度上限
 const LANDING_FRAMES = 26;
 const ACTOR_PIT_FAIL_MS = 2500;
@@ -26,10 +28,10 @@ function clampNum(v, lo, hi) { return v < lo ? lo : v > hi ? hi : v; }
 
 /** 造一个会走会跳的小人（走路小人只服务演出与「他自己会去用它」） */
 function spawnWalkerBody(def, world) {
-  const body = MATTER.Bodies.circle(def.x, def.y, ACTOR.radius, {
+  const body = MATTER_RT.Bodies.circle(def.x, def.y, ACTOR.radius, {
     label: 'actor', friction: ACTOR.friction, frictionAir: ACTOR.frictionAir, restitution: 0,
   });
-  MATTER.Body.setMass(body, ACTOR.mass);
+  MATTER_RT.Body.setMass(body, ACTOR.mass);
   world.addBody(body);
   return {
     kind: 'walker',
@@ -65,10 +67,10 @@ function stepWalker(a, world, dtMs) {
     // 速度逐步逼近目标速度（不是每帧硬设），否则小人会把桥当推土机推走
     const targetVx = dir * ACTOR.speed;
     const dvx = Math.max(-ACTOR.accelStep, Math.min(ACTOR.accelStep, targetVx - b.velocity.x));
-    MATTER.Body.setVelocity(b, { x: b.velocity.x + dvx, y: b.velocity.y });
+    MATTER_RT.Body.setVelocity(b, { x: b.velocity.x + dvx, y: b.velocity.y });
     if (dir !== 0 && Math.abs(b.position.x - a.lastX) < 0.25) a.stuck++; else a.stuck = 0;
     if (a.stuck >= ACTOR.stuckFrames && a.jumpCd <= 0) {
-      MATTER.Body.setVelocity(b, { x: dir * ACTOR.speed * 1.15, y: -ACTOR.jumpSpeed });
+      MATTER_RT.Body.setVelocity(b, { x: dir * ACTOR.speed * 1.15, y: -ACTOR.jumpSpeed });
       a.jumpCd = ACTOR.jumpCooldownMs;
       a.stuck = 0;
       a.jumping = 300;
@@ -107,7 +109,7 @@ export function createLevelRuntime(opts) {
   // ---- 地形 ----
   for (const t of level.terrain) {
     const mat = MATERIALS[t.mat] || MATERIALS.ground;
-    const body = MATTER.Bodies.rectangle(t.x, t.y, t.w, t.h, {
+    const body = MATTER_RT.Bodies.rectangle(t.x, t.y, t.w, t.h, {
       isStatic: true, angle: t.angle || 0, label: 'terrain',
       friction: mat.friction, frictionStatic: mat.frictionStatic, restitution: mat.restitution,
     });
@@ -122,17 +124,17 @@ export function createLevelRuntime(opts) {
   // ---- 道具（关2 的南瓜） ----
   for (const p of level.props || []) {
     const mat = MATERIALS.pumpkin;
-    const body = MATTER.Bodies.rectangle(p.x, p.y, p.w, p.h, {
+    const body = MATTER_RT.Bodies.rectangle(p.x, p.y, p.w, p.h, {
       label: 'prop', friction: mat.friction, frictionStatic: mat.frictionStatic,
       restitution: mat.restitution, frictionAir: mat.frictionAir == null ? 0.01 : mat.frictionAir,
     });
-    MATTER.Body.setDensity(body, 0.0035);
+    MATTER_RT.Body.setDensity(body, 0.0035);
     body.plugin = {
       kind: p.kind, home: { x: p.x, y: p.y }, graceMs: p.graceMs || 0,
       vx0: Number.isFinite(p.vx0) ? p.vx0 : null, stallMs: 0,
       releaseOnSpawn: p.releaseOnSpawn === true,
     };
-    if (body.plugin.graceMs > 0) MATTER.Body.setStatic(body, true);
+    if (body.plugin.graceMs > 0) MATTER_RT.Body.setStatic(body, true);
     world.addBody(body);
     state.props.push(body);
   }
@@ -169,7 +171,14 @@ export function createLevelRuntime(opts) {
   /** 生成造物：落点 x = 笔画质心 x（造物簿与世界共用同一 x 轴），从天下掉下来 */
   function spawnCreature(spec) {
     if (state.status !== 'playing') return null;
-    if (state.activeCreature) despawnCreature(state.activeCreature);
+    // N1：不清空旧造物，只在超过上限时让**最旧**的那个淡出
+    const live = state.creatures.filter((c) => !(c.fadeMs > 0));
+    while (live.length >= MAX_LIVE_CREATURES) {
+      const oldest = live.shift();
+      if (!oldest) break;
+      oldest.fadeMs = CREATURE_FADE_MS;
+      for (const b of oldest.bodies) { b.render = b.render || {}; b.render.opacity = 1; }
+    }
     if (!BodyBudget.trySpawn()) {
       emit('creature:rejected', { reason: 'budget' });
       return null;
@@ -241,16 +250,16 @@ export function createLevelRuntime(opts) {
     const after = massCenter(built.bodies);
     const dx = anchor.x - after.x;
     const dy = anchor.y - after.y;
-    if (dx || dy) for (const b of built.bodies) MATTER.Body.setPosition(b, { x: b.position.x + dx, y: b.position.y + dy });
+    if (dx || dy) for (const b of built.bodies) MATTER_RT.Body.setPosition(b, { x: b.position.x + dx, y: b.position.y + dy });
     c.bodies = built.bodies;
     c.constraints = built.constraints;
     c.degraded = built.degraded;
     c.composed = composed;
     addCreatureBodies(c);
     for (const b of c.bodies) {
-      MATTER.Body.setVelocity(b, vel);
-      MATTER.Body.setAngularVelocity(b, av);
-      if (c.bodies.length === 1) MATTER.Body.setAngle(b, ang);
+      MATTER_RT.Body.setVelocity(b, vel);
+      MATTER_RT.Body.setAngularVelocity(b, av);
+      if (c.bodies.length === 1) MATTER_RT.Body.setAngle(b, ang);
     }
   }
 
@@ -294,9 +303,9 @@ export function createLevelRuntime(opts) {
       a.pitMs += dtMs;
       if (a.pitMs > ACTOR_PIT_FAIL_MS) {
         a.pitMs = 0;
-        MATTER.Body.setPosition(a.body, a.start);
-        MATTER.Body.setVelocity(a.body, { x: 0, y: 0 });
-        MATTER.Body.setAngularVelocity(a.body, 0);
+        MATTER_RT.Body.setPosition(a.body, a.start);
+        MATTER_RT.Body.setVelocity(a.body, { x: 0, y: 0 });
+        MATTER_RT.Body.setAngularVelocity(a.body, 0);
         fail('actor-fell');
       }
     } else if (a.body.position.y < failY - 60) {
@@ -372,9 +381,9 @@ export function createLevelRuntime(opts) {
   function resetActorForRetry() {
     const a = state.actor;
     if (!a) return;
-    MATTER.Body.setPosition(a.body, a.start);
-    MATTER.Body.setVelocity(a.body, { x: 0, y: 0 });
-    MATTER.Body.setAngularVelocity(a.body, 0);
+    MATTER_RT.Body.setPosition(a.body, a.start);
+    MATTER_RT.Body.setVelocity(a.body, { x: 0, y: 0 });
+    MATTER_RT.Body.setAngularVelocity(a.body, 0);
     a.active = false;
     a.pitMs = 0;
     a.stuck = 0;
@@ -389,8 +398,8 @@ export function createLevelRuntime(opts) {
       if (p.isStatic) {
         p.plugin.graceMs -= dtMs;
         if (p.plugin.graceMs <= 0) {
-          MATTER.Body.setStatic(p, false);
-          if (Number.isFinite(p.plugin.vx0)) MATTER.Body.setVelocity(p, { x: p.plugin.vx0, y: 0 });
+          MATTER_RT.Body.setStatic(p, false);
+          if (Number.isFinite(p.plugin.vx0)) MATTER_RT.Body.setVelocity(p, { x: p.plugin.vx0, y: 0 });
           emit('prop:release', { kind: p.plugin.kind });
         }
       }
@@ -405,12 +414,12 @@ export function createLevelRuntime(opts) {
       if (p.plugin.stallMs > 3000) {
         p.plugin.stallMs = 0;
         fail('prop-stalled');
-        MATTER.Body.setPosition(p, p.plugin.home);
-        MATTER.Body.setVelocity(p, { x: 0, y: 0 });
-        MATTER.Body.setAngle(p, 0);
-        MATTER.Body.setAngularVelocity(p, 0);
+        MATTER_RT.Body.setPosition(p, p.plugin.home);
+        MATTER_RT.Body.setVelocity(p, { x: 0, y: 0 });
+        MATTER_RT.Body.setAngle(p, 0);
+        MATTER_RT.Body.setAngularVelocity(p, 0);
         p.plugin.graceMs = 1200;
-        MATTER.Body.setStatic(p, true);
+        MATTER_RT.Body.setStatic(p, true);
         resetActorForRetry();
       }
     }
@@ -421,12 +430,12 @@ export function createLevelRuntime(opts) {
     if (limit == null) return;
     for (const p of state.props) {
       if (p.position.y > limit) {
-        MATTER.Body.setPosition(p, p.plugin.home);
-        MATTER.Body.setVelocity(p, { x: 0, y: 0 });
-        MATTER.Body.setAngle(p, 0);
-        MATTER.Body.setAngularVelocity(p, 0);
+        MATTER_RT.Body.setPosition(p, p.plugin.home);
+        MATTER_RT.Body.setVelocity(p, { x: 0, y: 0 });
+        MATTER_RT.Body.setAngle(p, 0);
+        MATTER_RT.Body.setAngularVelocity(p, 0);
         p.plugin.graceMs = 1400;
-        MATTER.Body.setStatic(p, true);
+        MATTER_RT.Body.setStatic(p, true);
         fail('prop-lost');
         resetActorForRetry();
       }
@@ -443,7 +452,7 @@ export function createLevelRuntime(opts) {
           if (b.plugin && b.plugin.landingFrames > 0) {
             b.plugin.landingFrames--;
             if (b.velocity.y > LANDING_MAX_FALL_SPEED) {
-              MATTER.Body.setVelocity(b, { x: b.velocity.x, y: LANDING_MAX_FALL_SPEED });
+              MATTER_RT.Body.setVelocity(b, { x: b.velocity.x, y: LANDING_MAX_FALL_SPEED });
             }
           }
         }
@@ -468,6 +477,14 @@ export function createLevelRuntime(opts) {
     updatePropReset();
     updatePlates(dt);
     updatePlateSoftFail(dt);
+    // 淡出中的造物：透明度线性衰减，归零才真正移除
+    for (const c of state.creatures.slice()) {
+      if (!(c.fadeMs > 0)) continue;
+      c.fadeMs -= dt;
+      const a = Math.max(0, c.fadeMs / CREATURE_FADE_MS);
+      for (const b of c.bodies) { b.render = b.render || {}; b.render.opacity = a; }
+      if (c.fadeMs <= 0) despawnCreature(c);
+    }
     // 掉出世界的造物回收，避免越积越多
     for (const c of state.creatures.slice()) {
       const lowest = Math.max(...c.bodies.map((b) => b.position.y));

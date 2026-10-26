@@ -57,11 +57,11 @@ const which = process.argv[2] || 'all';
 
 if (which === 'all' || which === 'l1') {
   console.log('\n===== 关1 一个洞 =====');
-  runCase('L1-梁+变硬', { level: L1, strokes: synthLine(150, 700, 285, 702, 4, 0.7), abilities: ['harden'], seconds: 12, trace: ['actor'], traceKey: 'actor' });
-  runCase('L1-梁无能力', { level: L1, strokes: synthLine(150, 700, 285, 702, 4, 0.7), abilities: [], seconds: 12, trace: ['actor'] });
-  runCase('L1-扁闭合圈+变硬(兜底)', { level: L1, strokes: synthRect(215, 700, 152, 46, 5), abilities: ['harden'], seconds: 16, trace: ['actor'] });
-  runCase('L1-扁闭合圈无能力', { level: L1, strokes: synthRect(215, 700, 152, 46, 5), abilities: [], seconds: 14, trace: ['actor'] });
-  runCase('L1-圆轮+变硬', { level: L1, strokes: synthCircle(215, 700, 70, 6), abilities: ['harden'], seconds: 14, trace: ['actor'] });
+  runCase('L1-梁+变硬', { level: L1, strokes: synthLine(148, 700, 352, 703, 4, 0.7), abilities: ['harden'], seconds: 12, trace: ['actor'], traceKey: 'actor' });
+  runCase('L1-梁无能力', { level: L1, strokes: synthLine(148, 700, 352, 703, 4, 0.7), abilities: [], seconds: 12, trace: ['actor'] });
+  runCase('L1-扁闭合圈+变硬(兜底)', { level: L1, strokes: synthRect(249, 700, 210, 46, 5), abilities: ['harden'], seconds: 16, trace: ['actor'] });
+  runCase('L1-扁闭合圈无能力', { level: L1, strokes: synthRect(249, 700, 210, 46, 5), abilities: [], seconds: 14, trace: ['actor'] });
+  runCase('L1-圆轮+变硬', { level: L1, strokes: synthCircle(249, 700, 40, 6), abilities: ['harden'], seconds: 14, trace: ['actor'] });
   runCase('L1-什么都不画', { level: L1, strokes: synthLine(120, 700, 130, 712, 4, 0.7), abilities: [], seconds: 10, trace: ['actor'] });
 }
 

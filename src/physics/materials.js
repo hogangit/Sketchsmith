@@ -24,8 +24,18 @@ export const DENSITY_PUMPKIN = 0.0035;
 export const CREATURE_SOFT = { friction: 0.05, frictionStatic: 0.08, restitution: 0.32, frictionAir: 0.02 };
 /** 变硬后：抓得住、不弹 */
 export const CREATURE_HARD = { friction: 0.9, frictionStatic: 1.1, restitution: 0.02, frictionAir: 0.008 };
-/** 会滚：摩擦降到 ≈0（冰面） */
-export const CREATURE_ROLL = { friction: 0.02, frictionStatic: 0.02 };
+/**
+ * 会滚 = **不改摩擦，只压空气阻尼**（D16）。
+ * 依据（实测 tests/probe2.mjs + matter 0.20.0 求解顺序）：
+ *   · friction / frictionStatic 一旦非 0，切向速度就被乘着清掉（0.05 与 0.9 停止距离都 ≈8px），
+ *     所以「friction=0」换来的不是"会滚"，是"既不打滑也不滚、被任何 5px 台阶卡死"——
+ *     名字和实现相反。凡改 friction 的方案一律否决。
+ *   · frictionAir 每个子步同时衰减 velocity 与 angularVelocity（v *= 1-f，ω *= 1-f），
+ *     所以压低它 = 抓地还在 + 滚得更远，不需要额外扭矩。
+ * 乘算键：与其它能力叠乘（见 compose.js 的 MUL_KEYS）。
+ * [待实测标定] 0.25 是"滚得明显更远但还会停"的起点，等关 2 圆滚路径实测后再定。
+ */
+export const CREATURE_ROLL = { frictionAirMul: 0.25 };
 
 /** 质量倍数（变重 / 变轻） */
 export const DENSITY_MUL_HEAVY = 3;
@@ -41,6 +51,13 @@ export const MATERIALS = {
    * 求解时相乘，所以只要接触对里有一方 friction>0，切向速度就被清零（0.05 与 0.9 停止距离都是 ≈8px）。
    * friction=0 时它才真的滑得起来 —— 这也是「圆的/滚的东西」在本引擎里的等价写法。
    * frictionAir 是它唯一的减速来源（决定能滑多远），[待实测标定]。
+   */
+  /**
+   * [债-1] `friction: 0` 已判"该删"（团队已裁定，不是标定问题），但**删除与关 2 重建必须同一包**：
+   * 差包里把 0 改成 0.5 后实测关 2 立刻不可通（南瓜不再自己滑出高台，`smoke-browser` 卡在
+   * `ch1-02 / playing / failStreak 3`）。所以这里**暂时保留 0**，等关 2 按设计新案
+   * （圆滚 + 团块逐级跌 + 长条对照组，无"沿坡滑"解法）重建时一并改成 0.5。
+   * 理由写在代码里，是因为"为什么还留着这个 0"比"这个 0 是多少"更容易被忘掉。
    */
   pumpkin: { friction: 0, frictionStatic: 0, restitution: 0, frictionAir: 0.002 },
   ice:    { friction: 0.08, frictionStatic: 0.05, restitution: 0.0 },

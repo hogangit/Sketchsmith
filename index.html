@@ -7,7 +7,7 @@
 <meta name="theme-color" content="#f4efe2">
 <title>我是造物主</title>
 <style>
-  html,body{margin:0;padding:0;height:100%;overflow:hidden;background:#f4efe2;}
+  html,body{margin:0;padding:0;height:100%;height:100dvh;overflow:hidden;background:#f4efe2;overscroll-behavior:none;}
   body{
     touch-action:none;
     user-select:none;
@@ -451,22 +451,90 @@ function drawFreehandStroke(ctx, pts, size) {
   ctx.stroke();
 }
 
-/** 造物簿的纸面与格线 */
+/**
+ * 造物簿的纸面与格线。
+ * 复审要求「底部不能看出纸面到此为止」：格线必须**一路画到页面最下沿**，
+ * 并补两样一眼即认成"这是一整张纸"的东西——左侧装订线（双竖线）+ 右下页码。
+ * 之前格线 alpha 0.18 太淡，截帧缩图后下半页看起来是空白块，故提到 0.26。
+ */
 function drawPaper(ctx, x, y, w, h) {
   ctx.save();
   ctx.fillStyle = '#f6f1e3';
   ctx.fillRect(x, y, w, h);
-  ctx.strokeStyle = 'rgba(120,108,86,0.18)';
+  // 格线：起点对齐 y+22，步长 22，一路画到 y+h-1（最后一根恒定落在页面内 1px 处）
+  ctx.strokeStyle = 'rgba(120,108,86,0.26)';
   ctx.lineWidth = 1;
   for (let gy = y + 22; gy < y + h; gy += 22) {
     ctx.beginPath();
-    ctx.moveTo(x + 8, gy);
-    ctx.lineTo(x + w - 8, gy);
+    ctx.moveTo(x + 8, gy + 0.5);
+    ctx.lineTo(x + w - 8, gy + 0.5);
     ctx.stroke();
   }
+  // 左侧装订线：双竖线，贯穿整页高度（最能证明"纸到底了"）
+  ctx.strokeStyle = 'rgba(150,96,74,0.30)';
+  ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(x + 34.5, y + 1); ctx.lineTo(x + 34.5, y + h - 1); ctx.stroke();
+  ctx.strokeStyle = 'rgba(150,96,74,0.16)';
+  ctx.beginPath(); ctx.moveTo(x + 38.5, y + 1); ctx.lineTo(x + 38.5, y + h - 1); ctx.stroke();
+  // 页码：贴页脚右下，小幅墨迹
+  ctx.fillStyle = 'rgba(90,80,64,0.55)';
+  ctx.font = '10px ui-monospace,Menlo,Consolas,monospace';
+  ctx.textAlign = 'right';
+  ctx.fillText('— 1 —', x + w - 14, y + h - 7);
+  ctx.textAlign = 'left';
   ctx.strokeStyle = 'rgba(60,52,40,0.35)';
   ctx.lineWidth = 1.5;
   ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+  ctx.restore();
+}
+
+/**
+ * 农夫（灰盒占位但必须"认得出是人"）：草帽 + 头 + 身 + 两臂 + 两腿，共 ~14 行。
+ * 坐标按 body 中心给：脚踩 y+13.5，头顶 y-13，与 r=14 的物理圆一致。
+ * phase 由移动距离累积，停下时脚合拢；face=+1 朝右 / -1 朝左。
+ */
+function drawFarmer(ctx, cx, cy, opts) {
+  const o = opts || {};
+  const face = o.face == null ? 1 : (o.face < 0 ? -1 : 1);
+  // 视觉放大（默认 1.5×，约 40px 高）：**以脚底为锚点**放大，脚永远踩在 cy+13.5，
+  // 不会因为画大了就浮在地面上方（物理圆 r=14，底边 = cy+14）。
+  const s = o.scale == null ? 1.5 : o.scale;
+  const swing = Math.sin(o.phase || 0) * 3;
+  const INK = '#3a352c';
+  ctx.save();
+  ctx.translate(cx, cy + 13.5);
+  ctx.scale(face * s, s);
+  ctx.translate(0, -13.5);
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  // 地面投影
+  ctx.fillStyle = 'rgba(90,80,64,0.16)';
+  ctx.beginPath(); ctx.ellipse(0, 13.5, 10, 2.8, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = INK;
+  // 腿
+  ctx.lineWidth = 2.4;
+  ctx.beginPath(); ctx.moveTo(0, 4); ctx.lineTo(-4 + swing, 13); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(0, 4); ctx.lineTo(4 - swing, 13); ctx.stroke();
+  // 躯干
+  ctx.lineWidth = 3.2;
+  ctx.beginPath(); ctx.moveTo(0, -4.2); ctx.lineTo(0, 4.6); ctx.stroke();
+  // 手臂
+  ctx.lineWidth = 2.1;
+  ctx.beginPath(); ctx.moveTo(0, -2.6); ctx.lineTo(-6, 2.8); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(0, -2.6); ctx.lineTo(6 - swing * 0.6, 3.4); ctx.stroke();
+  // 头
+  ctx.beginPath(); ctx.arc(0.6, -8.4, 4.3, 0, Math.PI * 2);
+  ctx.fillStyle = '#f3eddc'; ctx.fill();
+  ctx.lineWidth = 1.7; ctx.stroke();
+  // 草帽：帽檐 + 帽顶
+  ctx.beginPath(); ctx.ellipse(0.6, -11.4, 8.4, 2.5, 0, 0, Math.PI * 2);
+  ctx.fillStyle = '#d9c69b'; ctx.fill();
+  ctx.lineWidth = 1.3; ctx.stroke();
+  ctx.beginPath(); ctx.arc(0.6, -11.1, 3.2, Math.PI, Math.PI * 2);
+  ctx.fillStyle = '#cfba8c'; ctx.fill(); ctx.stroke();
+  // 眼睛（朝右，让"面朝对岸"可读）
+  ctx.fillStyle = INK;
+  ctx.beginPath(); ctx.arc(2.3, -8.8, 0.9, 0, Math.PI * 2); ctx.fill();
   ctx.restore();
 }
 
@@ -523,8 +591,10 @@ function createCanvasSurface(canvasEl) {
   let cssH = DESIGN_H;
 
   function resize() {
-    cssW = Math.max(320, Math.floor(window.innerWidth || DESIGN_W));
-    cssH = Math.max(400, Math.floor(window.innerHeight || DESIGN_H));
+    // 用 CSS 盒子尺寸（position:fixed;inset:0;100%），不用 innerHeight：
+    // innerHeight 在部分移动端比可视区高，会留出底部死区。
+    cssW = Math.max(320, Math.floor(canvasEl.clientWidth || window.innerWidth || DESIGN_W));
+    cssH = Math.max(400, Math.floor(canvasEl.clientHeight || window.innerHeight || DESIGN_H));
     dpr = Math.min(RENDER_DPR_CAP, Math.max(1, window.devicePixelRatio || 1));
     canvasEl.width = Math.floor(cssW * dpr);
     canvasEl.height = Math.floor(cssH * dpr);
@@ -532,7 +602,8 @@ function createCanvasSurface(canvasEl) {
     canvasEl.style.height = cssH + 'px';
     scale = Math.min(cssW / DESIGN_W, cssH / DESIGN_H);
     offX = (cssW - DESIGN_W * scale) / 2;
-    offY = (cssH - DESIGN_H * scale) / 2;
+    // 内容底部对齐：高瘦视口（按宽缩放时设计高度不足）也不会在底部留死区，多出来的余量放天空
+    offY = cssH - DESIGN_H * scale;
   }
 
   function beginFrame(bg) {
@@ -567,6 +638,21 @@ function createCanvasSurface(canvasEl) {
     get scale() { return scale; },
     get dpr() { return dpr; },
     get cssSize() { return { w: cssW, h: cssH }; },
+    /** 布局自证：设计坐标矩形 + 换算到 CSS 像素后的真实边界（验收看 notebook.bottom === cssH） */
+    metrics() {
+      const sceneRect = { x: 0, y: 96, w: DESIGN_W, h: BOOK_TOP - 96 };
+      const notebookRect = { x: 0, y: BOOK_TOP, w: DESIGN_W, h: DESIGN_H - BOOK_TOP };
+      return {
+        cssW, cssH, dpr, scale, offX, offY,
+        contentTopCss: offY,
+        contentBottomCss: offY + DESIGN_H * scale,
+        sceneRect,
+        notebookRect,
+        notebookTopCss: offY + notebookRect.y * scale,
+        notebookBottomCss: offY + (notebookRect.y + notebookRect.h) * scale,
+        dprScale: dpr * scale,
+      };
+    },
   };
 }
 
@@ -604,35 +690,48 @@ function createStaticLayer() {
 /* src/render/hud.js */
 /**
  * src/render/hud.js —— HUD 与按钮命中（零物理、零平台 API）
- * 包含：关卡标题、芯片面板、失败提示阶梯、对话气泡、过关覆盖层、?debug=1 / ?impactDebug=1。
+ * 版式约束（阶段2 评审 P1-2/P2-4）：
+ *   · 头部 ≤96px：标题 / 副标题 / 芯片同行，开发注记只在 ?debug=1 里出现
+ *   · 场景 ≥360px：BOOK_TOP=513，场景占 96–513
+ *   · 调试 HUD 做成右上角半透明小块，不与主角区域重叠
  */
 
 
-const HUD_CHIP_W = 88;
-const HUD_CHIP_H = 40;
-const HUD_CHIP_GAP = 8;
-const HUD_CHIP_Y = 92;
-const HUD_CHIP_X0 = 20;
+const HUD_CHIP_W = 66;
+const HUD_CHIP_H = 34;
+const HUD_CHIP_GAP = 6;
+const HUD_CHIP_Y = 8;
+const HUD_PAD = 12;
 
 const ABILITY_LABELS = {
   harden: '变硬', roll: '会滚', heavy: '变重', light: '变轻',
 };
 
-function chipRect(i) {
-  return { x: HUD_CHIP_X0 + i * (HUD_CHIP_W + HUD_CHIP_GAP), y: HUD_CHIP_Y, w: HUD_CHIP_W, h: HUD_CHIP_H };
+/** 芯片按「右对齐、与标题同行」排布；n 由当前关卡芯片数决定 */
+function chipRect(i, n) {
+  const count = Math.max(1, Math.min(4, n || 4));
+  const total = count * HUD_CHIP_W + (count - 1) * HUD_CHIP_GAP;
+  const x0 = DESIGN_W - HUD_PAD - total;
+  return { x: x0 + i * (HUD_CHIP_W + HUD_CHIP_GAP), y: HUD_CHIP_Y, w: HUD_CHIP_W, h: HUD_CHIP_H };
 }
 
-function chipIndexAt(x, y) {
+function chipIndexAt(x, y, n) {
   for (let i = 0; i < 4; i++) {
-    const r = chipRect(i);
+    const r = chipRect(i, n);
     if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) return i;
   }
   return -1;
 }
 
 function buttonAt(x, y) {
-  if (x > DESIGN_W - 58 && y > 16 && y < 56) return 'audio';
-  if (x > DESIGN_W - 118 && x < DESIGN_W - 62 && y > 16 && y < 56) return 'retry';
+  return null;   // 重来/声音按钮已挪进标题行下方 40 内，见 drawHud 的 hitRect
+}
+
+/** 标题行右下角的两个小按钮命中区（与 drawHud 中的绘制保持一致） */
+function headerButtonAt(x, y) {
+  if (y < 52 || y > 92) return null;
+  if (x > DESIGN_W - 46 && x < DESIGN_W - 10) return 'audio';
+  if (x > DESIGN_W - 96 && x < DESIGN_W - 50) return 'retry';
   return null;
 }
 
@@ -642,88 +741,94 @@ function roundRect(ctx, x, y, w, h, r) {
   ctx.arcTo(x + w, y, x + w, y + h, r);
   ctx.arcTo(x + w, y + h, x, y + h, r);
   ctx.arcTo(x, y + h, x, y, r);
-  ctx.arcTo(x, y, x + w, y, r);
   ctx.closePath();
 }
 
 function drawHud(ctx, view) {
   const snap = view.snapshot || {};
+  const chips = snap.chips || view.level.chips || [];
   ctx.save();
   ctx.textBaseline = 'alphabetic';
 
-  // ---- 标题 ----
+  // ---- 头部（≤96px）：标题 + 副标题在左，芯片在右，同一行带 ----
   ctx.fillStyle = '#2b2620';
-  ctx.font = '600 22px system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif';
-  ctx.fillText(snap.title || view.level.title, 20, 44);
+  ctx.font = '700 19px system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif';
+  ctx.fillText(snap.title || view.level.title, 20, 30);
   ctx.fillStyle = '#7a6f5e';
-  ctx.font = '13px system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif';
-  ctx.fillText('第 ' + (view.levelIndex + 1) + ' 关 / 3　' + (view.level.subtitle || ''), 20, 66);
+  ctx.font = '11px system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif';
+  ctx.fillText('第 ' + (view.levelIndex + 1) + ' 关 / 3　' + (view.level.subtitle || ''), 20, 48);
 
-  // ---- 右上两个按钮 ----
-  ctx.font = '13px system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif';
-  ctx.fillStyle = '#5d5446';
-  ctx.strokeStyle = 'rgba(90,80,64,0.5)';
-  ctx.lineWidth = 1.5;
-  roundRect(ctx, DESIGN_W - 118, 16, 56, 40, 10); ctx.stroke();
-  ctx.fillText('重来', DESIGN_W - 104, 41);
-  roundRect(ctx, DESIGN_W - 58, 16, 42, 40, 10); ctx.stroke();
-  ctx.fillText(view.audioOn ? '声' : '静', DESIGN_W - 44, 41);
-
-  // ---- 芯片 ----
-  const chips = snap.chips || view.level.chips || [];
   const armed = snap.armedAbilities || [];
   for (let i = 0; i < chips.length && i < 4; i++) {
-    const r = chipRect(i);
+    const r = chipRect(i, chips.length);
     const id = chips[i];
     const on = armed.indexOf(id) >= 0;
-    ctx.fillStyle = on ? '#3f6b4f' : 'rgba(246,241,227,0.92)';
-    roundRect(ctx, r.x, r.y, r.w, r.h, 10);
+    ctx.fillStyle = on ? '#3f6b4f' : 'rgba(246,241,227,0.95)';
+    roundRect(ctx, r.x, r.y, r.w, r.h, 9);
     ctx.fill();
     ctx.strokeStyle = on ? '#2c4a37' : 'rgba(90,80,64,0.55)';
-    ctx.lineWidth = 1.6;
+    ctx.lineWidth = 1.5;
     ctx.stroke();
     ctx.fillStyle = on ? '#f4efe2' : '#3a352c';
-    ctx.font = '600 16px system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif';
-    ctx.fillText(ABILITY_LABELS[id] || id, r.x + 14, r.y + 26);
-    if (on) { ctx.font = '11px system-ui'; ctx.fillText('已贴', r.x + 58, r.y + 26); }
-  }
-  if (snap.chips && snap.chips.length < 4) {
-    ctx.fillStyle = 'rgba(90,80,64,0.45)';
-    ctx.font = '11px system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif';
-    ctx.fillText('（本轮只做 4 个能力，其余 20 个未实装）', HUD_CHIP_X0, HUD_CHIP_Y + HUD_CHIP_H + 16);
+    ctx.font = '600 14px system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif';
+    ctx.fillText(ABILITY_LABELS[id] || id, r.x + 11, r.y + 22);
   }
 
-  // ---- 提示阶梯 ----
+  // 重来 / 声音：标题行下方，不与场景争位置
+  ctx.strokeStyle = 'rgba(90,80,64,0.45)';
+  ctx.lineWidth = 1.3;
+  roundRect(ctx, DESIGN_W - 96, 54, 46, 34, 8); ctx.stroke();
+  roundRect(ctx, DESIGN_W - 46, 54, 36, 34, 8); ctx.stroke();
+  ctx.fillStyle = '#5d5446';
+  ctx.font = '12px system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif';
+  ctx.fillText('重来', DESIGN_W - 88, 76);
+  ctx.fillText(view.audioOn ? '声' : '静', DESIGN_W - 34, 76);
+
+  // ---- 失败提示（只在场景上沿，不压地形）----
+  // 提示项可以是字符串，也可以是 {beam, other}：**按玩家上一次造出来的形态分岔**。
+  // 关2 用这个：梁 → 「梁撑得住。南瓜我抬不动。」（否掉方向），其他形态 → 常规暗示。
+  // 【禁止话术·写死在这里】任何提示里不许出现「再试试」「再画长一点」「这次可能行」
+  //   —— 提示要否掉方向，不要否掉玩家的手法；后者会让他在错误方向上更努力。
   const hints = view.level.failHints || [];
   if (snap.hintLevel > 0 && hints.length) {
-    const t = hints[Math.min(hints.length - 1, snap.hintLevel - 1)];
+    const t = pickFailHint(hints, snap.hintLevel, snap.creature && snap.creature.form);
     ctx.fillStyle = 'rgba(120,40,32,0.92)';
-    ctx.font = '13px system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif';
-    wrapText(ctx, t, 20, 168, DESIGN_W - 40, 18);
+    ctx.font = '12px system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif';
+    wrapText(ctx, t || '', 20, 100, DESIGN_W - 40, 16);
   }
 
-  // ---- 对话气泡 ----
+  // ---- 对话气泡（放在天空带 y≈296，绝不压地面/沟/农夫）----
   if (view.bubble && view.bubble.until > view.now) {
     const b = view.bubble;
     ctx.font = '14px system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif';
     const text = b.text || '';
-    const w = Math.min(DESIGN_W - 40, Math.max(120, ctx.measureText(text).width + 28));
+    const w = Math.min(DESIGN_W - 40, Math.max(130, ctx.measureText(text).width + 28));
     const x = 20;
-    const y = 452;
+    const y = 296;
     ctx.fillStyle = 'rgba(250,246,236,0.96)';
     ctx.strokeStyle = 'rgba(90,80,64,0.5)';
     ctx.lineWidth = 1.4;
-    roundRect(ctx, x, y, w, 54, 12); ctx.fill(); ctx.stroke();
+    roundRect(ctx, x, y, w, 50, 12); ctx.fill(); ctx.stroke();
+    // 小尾巴：指向左岸的农夫（气泡在天空带，读者要知道是谁在说话）
+    ctx.beginPath();
+    ctx.moveTo(x + 34, y + 48);
+    ctx.lineTo(x + 46, y + 62);
+    ctx.lineTo(x + 52, y + 47);
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(250,246,236,0.96)';
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(90,80,64,0.5)';
+    ctx.beginPath(); ctx.moveTo(x + 34, y + 49); ctx.lineTo(x + 46, y + 62); ctx.lineTo(x + 52, y + 48); ctx.stroke();
     ctx.fillStyle = '#6b6050';
     ctx.font = '11px system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif';
-    ctx.fillText(b.who || '', x + 14, y + 18);
+    ctx.fillText(b.who || '', x + 14, y + 17);
     ctx.fillStyle = '#2b2620';
     ctx.font = '14px system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif';
-    ctx.fillText(text, x + 14, y + 39);
+    ctx.fillText(text, x + 14, y + 37);
     if (view.voiceMode === 'bubble') {
       ctx.fillStyle = 'rgba(120,110,90,0.6)';
       ctx.font = '10px system-ui';
-      ctx.fillText('（无中文语音 · 气泡模式）', x + 14, y + 50);
+      ctx.fillText('（无中文语音 · 气泡模式）', x + 14, y + 47);
     }
   }
 
@@ -758,33 +863,60 @@ function drawHud(ctx, view) {
     ctx.fillText('采样 ' + view.livePoints + ' 点', DESIGN_W - 92, BOOK_TOP + 18);
   }
 
-  // ---- ?debug=1 ----
+  // ---- ?debug=1：右上角半透明小块，不压主角 ----
   if (view.debug) {
     const s = snap.creature;
     const lines = [
       'fps ' + view.fps.toFixed(0) + '  frame ' + view.frameMs.toFixed(1) + 'ms  tier ' + view.tier,
       'bodies ' + view.bodyCount + '  strokes ' + view.strokeCount + '  unlocked ' + view.audioUnlocked,
-      s ? ('form ' + s.form + '  degraded ' + s.degraded + '  parts ' + s.parts + '  mass ' + s.mass.toFixed(1)) : 'form -',
-      s && s.geo ? ('aspect ' + s.geo.aspect.toFixed(2) + '  area ' + s.geo.area.toFixed(0) + '  w/h ' + s.geo.w.toFixed(0) + '/' + s.geo.h.toFixed(0) + '  closed ' + s.geo.closed + '  nodes ' + s.geo.nodes) : 'geo -',
-      'abilities [' + (snap.armedAbilities || []).join(',') + ']  combos ' + (s ? s.combos.join('/') : '-'),
+      'chips [' + chips.join(',') + ']  armed [' + (snap.armedAbilities || []).join(',') + ']',
+      s ? ('form ' + s.form + '  deg ' + s.degraded + '  parts ' + s.parts + '  mass ' + s.mass.toFixed(1)) : 'form -',
+      s && s.geo ? ('aspect ' + s.geo.aspect.toFixed(2) + '  area ' + s.geo.area.toFixed(0) + '  w/h ' + s.geo.w.toFixed(0) + '/' + s.geo.h.toFixed(0)) : 'geo -',
+      s && s.geo ? ('closed ' + s.geo.closed + '  nodes ' + s.geo.nodes + '  combos ' + s.combos.join('/')) : 'combos -',
       snap.propPos ? ('prop ' + snap.propPos.x.toFixed(0) + ',' + snap.propPos.y.toFixed(0)) : 'prop -',
-      snap.plate && snap.plate.length ? ('plate load ' + snap.plate[0].load.toFixed(1) + '/' + snap.plate[0].threshold + '  hold ' + snap.plate[0].holdMs.toFixed(0) + 'ms') : 'plate -',
-      'actor ' + (snap.actorPos ? snap.actorPos.x.toFixed(0) + ',' + snap.actorPos.y.toFixed(0) : '-') + '  fails ' + snap.failStreak,
+      snap.plate && snap.plate.length ? ('plate ' + snap.plate[0].load.toFixed(1) + '/' + snap.plate[0].threshold + '  hold ' + snap.plate[0].holdMs.toFixed(0) + 'ms') : 'plate -',
+      // 位置分开报：B=物理圆心（body.position），R=渲染锚点（drawFarmer 的 cx,cy），feet=脚底 y。
+      // 三者关系固定：R === B（渲染直接用 body.position，没有任何偏移），feet = B.y + 14（r=14）。
+      // 画面上的人是按脚底放大 1.5× 的，但锚点仍是 B —— 所以"报的位置"和"画的位置"永远同一坐标系。
+      (snap.actorPos
+        ? ('actor B' + snap.actorPos.x.toFixed(0) + ',' + snap.actorPos.y.toFixed(0) +
+           '  R' + snap.actorPos.x.toFixed(0) + ',' + snap.actorPos.y.toFixed(0) +
+           '  feet ' + (snap.actorPos.y + 14).toFixed(0))
+        : 'actor -') + '  fails ' + snap.failStreak,
+      '（本轮只做 4 个能力，其余 20 个未实装）',
     ];
-    ctx.font = '11px ui-monospace,Menlo,Consolas,monospace';
-    ctx.fillStyle = 'rgba(20,18,14,0.78)';
-    for (let i = 0; i < lines.length; i++) ctx.fillText(lines[i], 20, 200 + i * 14);
+    const bx = 176;
+    const bw = DESIGN_W - bx - 12;
+    const bh = lines.length * 12 + 12;
+    ctx.fillStyle = 'rgba(20,18,14,0.55)';
+    roundRect(ctx, bx, 118, bw, bh, 8);
+    ctx.fill();
+    ctx.font = '10px ui-monospace,Menlo,Consolas,monospace';
+    ctx.fillStyle = 'rgba(244,239,226,0.95)';
+    for (let i = 0; i < lines.length; i++) ctx.fillText(lines[i], bx + 8, 132 + i * 12);
   }
 
-  // ---- ?impactDebug=1（只报本帧 score 与是否被闸门拦下，不报累计次数）----
+  // ---- ?impactDebug=1：只报本帧 score 与是否被闸门拦下，不报累计次数 ----
   if (view.impactDebug) {
     const d = view.impactDebug;
-    ctx.font = '12px ui-monospace,Menlo,Consolas,monospace';
-    ctx.fillStyle = d.gated ? 'rgba(150,90,20,0.9)' : 'rgba(30,90,50,0.9)';
-    ctx.fillText('impact score ' + d.score.toFixed(3) + '  ' + (d.gated ? 'GATED(' + d.reason + ')' : d.reason), 20, 200 + 8 * 14 + 8);
+    ctx.font = '11px ui-monospace,Menlo,Consolas,monospace';
+    ctx.fillStyle = d.gated ? 'rgba(150,90,20,0.95)' : 'rgba(30,90,50,0.95)';
+    ctx.fillText('impact score ' + d.score.toFixed(3) + '  ' + (d.gated ? 'GATED(' + d.reason + ')' : d.reason), 20, view.debug ? 262 : 120);
   }
 
   ctx.restore();
+}
+
+/**
+ * 失败提示的取值（纯函数，便于单测）：字符串直接返回；{beam, other} 按形态分岔。
+ * 关2 的方向型对照靠这个分岔——它是"提示是否真的被说出"的**可断言入口**。
+ */
+function pickFailHint(hints, hintLevel, form) {
+  if (!hints || !hints.length || !(hintLevel > 0)) return '';
+  const raw = hints[Math.min(hints.length - 1, hintLevel - 1)];
+  if (raw == null) return '';
+  if (typeof raw === 'string') return raw;
+  return (form === 'beam' ? raw.beam : raw.other) || '';
 }
 
 function wrapText(ctx, text, x, y, maxW, lh) {
@@ -1318,8 +1450,18 @@ const DENSITY_PUMPKIN = 0.0035;
 const CREATURE_SOFT = { friction: 0.05, frictionStatic: 0.08, restitution: 0.32, frictionAir: 0.02 };
 /** 变硬后：抓得住、不弹 */
 const CREATURE_HARD = { friction: 0.9, frictionStatic: 1.1, restitution: 0.02, frictionAir: 0.008 };
-/** 会滚：摩擦降到 ≈0（冰面） */
-const CREATURE_ROLL = { friction: 0.02, frictionStatic: 0.02 };
+/**
+ * 会滚 = **不改摩擦，只压空气阻尼**（D16）。
+ * 依据（实测 tests/probe2.mjs + matter 0.20.0 求解顺序）：
+ *   · friction / frictionStatic 一旦非 0，切向速度就被乘着清掉（0.05 与 0.9 停止距离都 ≈8px），
+ *     所以「friction=0」换来的不是"会滚"，是"既不打滑也不滚、被任何 5px 台阶卡死"——
+ *     名字和实现相反。凡改 friction 的方案一律否决。
+ *   · frictionAir 每个子步同时衰减 velocity 与 angularVelocity（v *= 1-f，ω *= 1-f），
+ *     所以压低它 = 抓地还在 + 滚得更远，不需要额外扭矩。
+ * 乘算键：与其它能力叠乘（见 compose.js 的 MUL_KEYS）。
+ * [待实测标定] 0.25 是"滚得明显更远但还会停"的起点，等关 2 圆滚路径实测后再定。
+ */
+const CREATURE_ROLL = { frictionAirMul: 0.25 };
 
 /** 质量倍数（变重 / 变轻） */
 const DENSITY_MUL_HEAVY = 3;
@@ -1335,6 +1477,13 @@ const MATERIALS = {
    * 求解时相乘，所以只要接触对里有一方 friction>0，切向速度就被清零（0.05 与 0.9 停止距离都是 ≈8px）。
    * friction=0 时它才真的滑得起来 —— 这也是「圆的/滚的东西」在本引擎里的等价写法。
    * frictionAir 是它唯一的减速来源（决定能滑多远），[待实测标定]。
+   */
+  /**
+   * [债-1] `friction: 0` 已判"该删"（团队已裁定，不是标定问题），但**删除与关 2 重建必须同一包**：
+   * 差包里把 0 改成 0.5 后实测关 2 立刻不可通（南瓜不再自己滑出高台，`smoke-browser` 卡在
+   * `ch1-02 / playing / failStreak 3`）。所以这里**暂时保留 0**，等关 2 按设计新案
+   * （圆滚 + 团块逐级跌 + 长条对照组，无"沿坡滑"解法）重建时一并改成 0.5。
+   * 理由写在代码里，是因为"为什么还留着这个 0"比"这个 0 是多少"更容易被忘掉。
    */
   pumpkin: { friction: 0, frictionStatic: 0, restitution: 0, frictionAir: 0.002 },
   ice:    { friction: 0.08, frictionStatic: 0.05, restitution: 0.0 },
@@ -1608,7 +1757,7 @@ const StrokeBudget = {
 
 
 
-/* MATTER 由 physics/world.js 在同一打包作用域声明（兜底拼接器 D3：顶层名全仓库唯一） */
+const MATTER_BF = typeof Matter !== 'undefined' ? Matter : globalThis.Matter;  // 本文件专用别名（兜底拼接器 D3：顶层名全仓库唯一）
 
 function isFinitePt(p) {
   return p && Number.isFinite(p.x) && Number.isFinite(p.y);
@@ -1649,7 +1798,7 @@ function bodyFromPolygon(points, spawn, options) {
   // 一级：交给 matter 的 fromVertices（内部用 poly-decomp 拆凸）
   if (poly.length >= 3) {
     try {
-      const b = MATTER.Bodies.fromVertices(spawn.x, spawn.y, [poly.map((p) => ({ x: p.x, y: p.y }))], base, true);
+      const b = MATTER_BF.Bodies.fromVertices(spawn.x, spawn.y, [poly.map((p) => ({ x: p.x, y: p.y }))], base, true);
       const ok = sanitizeCompound(b, DECOMP_MAX_PARTS);
       if (ok) return { bodies: [ok], degraded: 'none' };
     } catch (err) {
@@ -1662,7 +1811,7 @@ function bodyFromPolygon(points, spawn, options) {
     try {
       const hull = geoConvexHull(poly);
       if (hull.length >= 3) {
-        const b = MATTER.Bodies.fromVertices(spawn.x, spawn.y, [hull.map((p) => ({ x: p.x, y: p.y }))], base, true);
+        const b = MATTER_BF.Bodies.fromVertices(spawn.x, spawn.y, [hull.map((p) => ({ x: p.x, y: p.y }))], base, true);
         if (b && b.vertices && b.vertices.length >= 3) {
           for (const v of b.vertices) if (!isFinitePt(v)) throw new Error('hull 顶点非法');
           return { bodies: [b], degraded: 'hull' };
@@ -1683,7 +1832,7 @@ function bodyFromPolygon(points, spawn, options) {
   }
   if (isFinite(minX) && maxX - minX > 1 && maxY - minY > 1) {
     try {
-      const b = MATTER.Bodies.rectangle((minX + maxX) / 2, (minY + maxY) / 2, maxX - minX, maxY - minY, base);
+      const b = MATTER_BF.Bodies.rectangle((minX + maxX) / 2, (minY + maxY) / 2, maxX - minX, maxY - minY, base);
       return { bodies: [b], degraded: 'bbox' };
     } catch (err) {
       if (typeof console !== 'undefined') console.warn('[body-factory] 矩形失败，退化到圆', err && err.message);
@@ -1692,7 +1841,7 @@ function bodyFromPolygon(points, spawn, options) {
 
   // 四级：圆形（最差也能玩）
   const r = Math.max(WHEEL_MIN_RADIUS, (Number.isFinite(maxX - minX) ? maxX - minX : 0) / 2 || 12);
-  return { bodies: [MATTER.Bodies.circle(spawn.x, spawn.y, r, base)], degraded: 'circle' };
+  return { bodies: [MATTER_BF.Bodies.circle(spawn.x, spawn.y, r, base)], degraded: 'circle' };
 }
 
 /** 把刚体组整体平移到目标点（让落点与虚线引导一致） */
@@ -1708,7 +1857,7 @@ function recenter(bodies, target) {
   const dx = target.x - mx / tm;
   const dy = target.y - my / tm;
   if (!Number.isFinite(dx) || !Number.isFinite(dy)) return;
-  for (const b of bodies) MATTER.Body.translate(b, { x: dx, y: dy });
+  for (const b of bodies) MATTER_BF.Body.translate(b, { x: dx, y: dy });
 }
 
 /**
@@ -1718,12 +1867,15 @@ function recenter(bodies, target) {
 function applyMods(bodies, mods) {
   const m = mods || {};
   const densityMul = Number.isFinite(m.densityMul) ? m.densityMul : 1;
+  // 会滚（D16）：只乘空气阻尼；friction / frictionStatic 不从这里改
+  const airMul = Number.isFinite(m.frictionAirMul) ? m.frictionAirMul : 1;
   for (const b of bodies) {
     if (!b.isStatic) {
-      MATTER.Body.setDensity(b, DENSITY_CREATURE * densityMul);
+      MATTER_BF.Body.setDensity(b, DENSITY_CREATURE * densityMul);
       b.friction = m.friction != null ? m.friction : CREATURE_SOFT.friction;
       b.frictionStatic = m.frictionStatic != null ? m.frictionStatic : CREATURE_SOFT.frictionStatic;
-      b.frictionAir = m.frictionAir != null ? m.frictionAir : CREATURE_SOFT.frictionAir;
+      const air = m.frictionAir != null ? m.frictionAir : CREATURE_SOFT.frictionAir;
+      b.frictionAir = air * airMul;
       b.restitution = m.restitution != null ? m.restitution : CREATURE_SOFT.restitution;
       b.slop = 0.02;
     }
@@ -1756,16 +1908,16 @@ function buildCreatureBody(spec) {
     const mx = (p0.x + pN.x) / 2;
     const my = (p0.y + pN.y) / 2;
     if (rigid || len < 90) {
-      bodies = [MATTER.Bodies.rectangle(mx, my, len, thickness, { angle })];
+      bodies = [MATTER_BF.Bodies.rectangle(mx, my, len, thickness, { angle })];
     } else {
       // 没变硬 = 软的：两段铰接，压上去会从中折下去（关1 的教学性失败）
       const half = len / 2;
       const dx = Math.cos(angle) * (len / 4);
       const dy = Math.sin(angle) * (len / 4);
-      const left = MATTER.Bodies.rectangle(mx - dx, my - dy, half, thickness, { angle });
-      const right = MATTER.Bodies.rectangle(mx + dx, my + dy, half, thickness, { angle });
+      const left = MATTER_BF.Bodies.rectangle(mx - dx, my - dy, half, thickness, { angle });
+      const right = MATTER_BF.Bodies.rectangle(mx + dx, my + dy, half, thickness, { angle });
       bodies = [left, right];
-      constraints = [MATTER.Constraint.create({
+      constraints = [MATTER_BF.Constraint.create({
         bodyA: left, pointA: { x: half / 2, y: 0 },
         bodyB: right, pointB: { x: -half / 2, y: 0 },
         length: 0, stiffness: SOFT_BEAM_STIFFNESS, render: { visible: false },
@@ -1774,10 +1926,10 @@ function buildCreatureBody(spec) {
     }
   } else if (form === 'wheel' && geo) {
     const r = Math.max(WHEEL_MIN_RADIUS, Math.min(geo.bbox.w, geo.bbox.h) / 2);
-    bodies = [MATTER.Bodies.circle(geo.centroid.x, geo.centroid.y, r)];
+    bodies = [MATTER_BF.Bodies.circle(geo.centroid.x, geo.centroid.y, r)];
   } else if (form === 'grain' && geo) {
     const r = Math.min(GRAIN_MAX_RADIUS, Math.max(4, Math.sqrt(Math.max(geo.area, 40) / Math.PI)));
-    bodies = [MATTER.Bodies.circle(geo.centroid.x, geo.centroid.y, r)];
+    bodies = [MATTER_BF.Bodies.circle(geo.centroid.x, geo.centroid.y, r)];
   } else if (form === 'rope' && centerline.length >= 2) {
     // 绳：中心线切成 n 节小刚体 + 铰接约束（首尾相连的多笔才有意义，本轮 UI 未接线）
     const total = geoPolylineLength(centerline);
@@ -1787,12 +1939,12 @@ function buildCreatureBody(spec) {
       const a = nodes[i - 1], b = nodes[i];
       const segLen = Math.hypot(b.x - a.x, b.y - a.y);
       const angle = Math.atan2(b.y - a.y, b.x - a.x);
-      bodies.push(MATTER.Bodies.rectangle((a.x + b.x) / 2, (a.y + b.y) / 2, Math.max(6, segLen), thickness, { angle }));
+      bodies.push(MATTER_BF.Bodies.rectangle((a.x + b.x) / 2, (a.y + b.y) / 2, Math.max(6, segLen), thickness, { angle }));
     }
     recenter(bodies, spawn);
     for (let i = 1; i < bodies.length; i++) {
       const segLen = Math.hypot(nodes[i].x - nodes[i - 1].x, nodes[i].y - nodes[i - 1].y);
-      constraints.push(MATTER.Constraint.create({
+      constraints.push(MATTER_BF.Constraint.create({
         bodyA: bodies[i - 1], pointA: { x: segLen / 2, y: 0 },
         bodyB: bodies[i], pointB: { x: -segLen / 2, y: 0 },
         length: 0, stiffness: 0.9, render: { visible: false },
@@ -1802,7 +1954,7 @@ function buildCreatureBody(spec) {
     // 松散堆：每笔一块小刚体（本轮 UI 一笔一组，走不到这里；管线与单测覆盖）
     for (const strokePts of geo.prepared) {
       const r = Math.max(6, Math.min(18, Math.sqrt(Math.max(60, strokePts.length * 6) / Math.PI)));
-      bodies.push(MATTER.Bodies.circle(strokePts[0].x, strokePts[0].y, r));
+      bodies.push(MATTER_BF.Bodies.circle(strokePts[0].x, strokePts[0].y, r));
     }
   } else if (poly.length >= 3 && geo && geo.closed) {
     const r = bodyFromPolygon(poly, spawn, {});
@@ -1816,10 +1968,10 @@ function buildCreatureBody(spec) {
   } else if (geo && geo.bbox) {
     const w = Math.max(BEAM_MIN_THICKNESS * 2, geo.bbox.w);
     const h = Math.max(BEAM_MIN_THICKNESS * 2, geo.bbox.h);
-    bodies = [MATTER.Bodies.rectangle(geo.bbox.cx, geo.bbox.cy, w, h)];
+    bodies = [MATTER_BF.Bodies.rectangle(geo.bbox.cx, geo.bbox.cy, w, h)];
     degraded = 'bbox';
   } else {
-    bodies = [MATTER.Bodies.circle(spawn.x, spawn.y, 12)];
+    bodies = [MATTER_BF.Bodies.circle(spawn.x, spawn.y, 12)];
     degraded = 'circle';
   }
 
@@ -1870,12 +2022,13 @@ const ABILITIES = {
   roll: {
     id: 'roll', name: '会滚', chapter: 2,
     layer: 'motion', priority: 20,
-    mods: { friction: CREATURE_ROLL.friction, frictionStatic: CREATURE_ROLL.frictionStatic },
+    // D16：只压空气阻尼，friction / frictionStatic 一个字都不动（动了就等于把造物钉在地上）
+    mods: { frictionAirMul: CREATURE_ROLL.frictionAirMul },
     flags: { rolling: true },
     hooks: {},
     tags: ['motion'],
     conflicts: [],
-    blurb: '表面摩擦降到≈0，碰到斜的东西就一直加速',
+    blurb: '抓地不变，空气阻力降到 1/4：圆的东西滚得更远——长条和团块本来就没什么可滚的',
   },
   heavy: {
     id: 'heavy', name: '变重', chapter: 3,
@@ -1966,6 +2119,10 @@ function lookupCombos(ids) {
 
 const ABILITY_LAYER_ORDER = ['material', 'motion', 'sense', 'meta'];
 
+/** 乘算键：同键多处出现时相乘而不是覆盖（R3 可交换） */
+const MUL_KEYS = ['densityMul', 'frictionAirMul'];
+const isMul = (key) => MUL_KEYS.indexOf(key) >= 0;
+
 function composeAbilities(ids) {
   const picked = [];
   const unknown = [];
@@ -1991,8 +2148,8 @@ function composeAbilities(ids) {
   for (const ab of sorted) {
     for (const key of Object.keys(ab.mods || {})) {
       const val = ab.mods[key];
-      if (key === 'densityMul') {
-        mods.densityMul = (mods.densityMul == null ? 1 : mods.densityMul) * val;  // R3
+      if (isMul(key)) {
+        mods[key] = (mods[key] == null ? 1 : mods[key]) * val;  // R3
       } else {
         if (owner[key] && owner[key] !== ab.id) {
           notes.push({ type: 'override', key, from: owner[key], to: ab.id });
@@ -2013,12 +2170,13 @@ function composeAbilities(ids) {
   const combos = lookupCombos(picked.map((a) => a.id));
   for (const c of combos) {
     for (const key of Object.keys(c.bonus || {})) {
-      if (key === 'densityMul') mods.densityMul = (mods.densityMul == null ? 1 : mods.densityMul) * c.bonus[key];
+      if (isMul(key)) mods[key] = (mods[key] == null ? 1 : mods[key]) * c.bonus[key];
       else mods[key] = c.bonus[key];
     }
   }
 
   if (mods.densityMul == null) mods.densityMul = 1;
+  if (mods.frictionAirMul == null) mods.frictionAirMul = 1;
 
   return {
     ids: picked.map((a) => a.id),
@@ -2051,8 +2209,10 @@ function composeAbilities(ids) {
 
 
 
-/* MATTER 由 physics/world.js 在同一打包作用域声明（兜底拼接器 D3：顶层名全仓库唯一） */
+const MATTER_RT = typeof Matter !== 'undefined' ? Matter : globalThis.Matter;  // 本文件专用别名（兜底拼接器 D3：顶层名全仓库唯一）
 const CREATURE_DESPAWN_Y = 780;
+const MAX_LIVE_CREATURES = 2;     // N1：同时最多 2 个造物（试错-迭代不允许“一画就吞掉前一个”）
+const CREATURE_FADE_MS = 200;     // 被替换的那个淡出 200ms，不许瞬间消失
 const LANDING_MAX_FALL_SPEED = 3.4;   // px/step，落地缓冲期内的下落速度上限
 const LANDING_FRAMES = 26;
 const ACTOR_PIT_FAIL_MS = 2500;
@@ -2062,10 +2222,10 @@ function clampNum(v, lo, hi) { return v < lo ? lo : v > hi ? hi : v; }
 
 /** 造一个会走会跳的小人（走路小人只服务演出与「他自己会去用它」） */
 function spawnWalkerBody(def, world) {
-  const body = MATTER.Bodies.circle(def.x, def.y, ACTOR.radius, {
+  const body = MATTER_RT.Bodies.circle(def.x, def.y, ACTOR.radius, {
     label: 'actor', friction: ACTOR.friction, frictionAir: ACTOR.frictionAir, restitution: 0,
   });
-  MATTER.Body.setMass(body, ACTOR.mass);
+  MATTER_RT.Body.setMass(body, ACTOR.mass);
   world.addBody(body);
   return {
     kind: 'walker',
@@ -2101,10 +2261,10 @@ function stepWalker(a, world, dtMs) {
     // 速度逐步逼近目标速度（不是每帧硬设），否则小人会把桥当推土机推走
     const targetVx = dir * ACTOR.speed;
     const dvx = Math.max(-ACTOR.accelStep, Math.min(ACTOR.accelStep, targetVx - b.velocity.x));
-    MATTER.Body.setVelocity(b, { x: b.velocity.x + dvx, y: b.velocity.y });
+    MATTER_RT.Body.setVelocity(b, { x: b.velocity.x + dvx, y: b.velocity.y });
     if (dir !== 0 && Math.abs(b.position.x - a.lastX) < 0.25) a.stuck++; else a.stuck = 0;
     if (a.stuck >= ACTOR.stuckFrames && a.jumpCd <= 0) {
-      MATTER.Body.setVelocity(b, { x: dir * ACTOR.speed * 1.15, y: -ACTOR.jumpSpeed });
+      MATTER_RT.Body.setVelocity(b, { x: dir * ACTOR.speed * 1.15, y: -ACTOR.jumpSpeed });
       a.jumpCd = ACTOR.jumpCooldownMs;
       a.stuck = 0;
       a.jumping = 300;
@@ -2143,7 +2303,7 @@ function createLevelRuntime(opts) {
   // ---- 地形 ----
   for (const t of level.terrain) {
     const mat = MATERIALS[t.mat] || MATERIALS.ground;
-    const body = MATTER.Bodies.rectangle(t.x, t.y, t.w, t.h, {
+    const body = MATTER_RT.Bodies.rectangle(t.x, t.y, t.w, t.h, {
       isStatic: true, angle: t.angle || 0, label: 'terrain',
       friction: mat.friction, frictionStatic: mat.frictionStatic, restitution: mat.restitution,
     });
@@ -2158,17 +2318,17 @@ function createLevelRuntime(opts) {
   // ---- 道具（关2 的南瓜） ----
   for (const p of level.props || []) {
     const mat = MATERIALS.pumpkin;
-    const body = MATTER.Bodies.rectangle(p.x, p.y, p.w, p.h, {
+    const body = MATTER_RT.Bodies.rectangle(p.x, p.y, p.w, p.h, {
       label: 'prop', friction: mat.friction, frictionStatic: mat.frictionStatic,
       restitution: mat.restitution, frictionAir: mat.frictionAir == null ? 0.01 : mat.frictionAir,
     });
-    MATTER.Body.setDensity(body, 0.0035);
+    MATTER_RT.Body.setDensity(body, 0.0035);
     body.plugin = {
       kind: p.kind, home: { x: p.x, y: p.y }, graceMs: p.graceMs || 0,
       vx0: Number.isFinite(p.vx0) ? p.vx0 : null, stallMs: 0,
       releaseOnSpawn: p.releaseOnSpawn === true,
     };
-    if (body.plugin.graceMs > 0) MATTER.Body.setStatic(body, true);
+    if (body.plugin.graceMs > 0) MATTER_RT.Body.setStatic(body, true);
     world.addBody(body);
     state.props.push(body);
   }
@@ -2205,7 +2365,14 @@ function createLevelRuntime(opts) {
   /** 生成造物：落点 x = 笔画质心 x（造物簿与世界共用同一 x 轴），从天下掉下来 */
   function spawnCreature(spec) {
     if (state.status !== 'playing') return null;
-    if (state.activeCreature) despawnCreature(state.activeCreature);
+    // N1：不清空旧造物，只在超过上限时让**最旧**的那个淡出
+    const live = state.creatures.filter((c) => !(c.fadeMs > 0));
+    while (live.length >= MAX_LIVE_CREATURES) {
+      const oldest = live.shift();
+      if (!oldest) break;
+      oldest.fadeMs = CREATURE_FADE_MS;
+      for (const b of oldest.bodies) { b.render = b.render || {}; b.render.opacity = 1; }
+    }
     if (!BodyBudget.trySpawn()) {
       emit('creature:rejected', { reason: 'budget' });
       return null;
@@ -2277,16 +2444,16 @@ function createLevelRuntime(opts) {
     const after = massCenter(built.bodies);
     const dx = anchor.x - after.x;
     const dy = anchor.y - after.y;
-    if (dx || dy) for (const b of built.bodies) MATTER.Body.setPosition(b, { x: b.position.x + dx, y: b.position.y + dy });
+    if (dx || dy) for (const b of built.bodies) MATTER_RT.Body.setPosition(b, { x: b.position.x + dx, y: b.position.y + dy });
     c.bodies = built.bodies;
     c.constraints = built.constraints;
     c.degraded = built.degraded;
     c.composed = composed;
     addCreatureBodies(c);
     for (const b of c.bodies) {
-      MATTER.Body.setVelocity(b, vel);
-      MATTER.Body.setAngularVelocity(b, av);
-      if (c.bodies.length === 1) MATTER.Body.setAngle(b, ang);
+      MATTER_RT.Body.setVelocity(b, vel);
+      MATTER_RT.Body.setAngularVelocity(b, av);
+      if (c.bodies.length === 1) MATTER_RT.Body.setAngle(b, ang);
     }
   }
 
@@ -2330,9 +2497,9 @@ function createLevelRuntime(opts) {
       a.pitMs += dtMs;
       if (a.pitMs > ACTOR_PIT_FAIL_MS) {
         a.pitMs = 0;
-        MATTER.Body.setPosition(a.body, a.start);
-        MATTER.Body.setVelocity(a.body, { x: 0, y: 0 });
-        MATTER.Body.setAngularVelocity(a.body, 0);
+        MATTER_RT.Body.setPosition(a.body, a.start);
+        MATTER_RT.Body.setVelocity(a.body, { x: 0, y: 0 });
+        MATTER_RT.Body.setAngularVelocity(a.body, 0);
         fail('actor-fell');
       }
     } else if (a.body.position.y < failY - 60) {
@@ -2408,9 +2575,9 @@ function createLevelRuntime(opts) {
   function resetActorForRetry() {
     const a = state.actor;
     if (!a) return;
-    MATTER.Body.setPosition(a.body, a.start);
-    MATTER.Body.setVelocity(a.body, { x: 0, y: 0 });
-    MATTER.Body.setAngularVelocity(a.body, 0);
+    MATTER_RT.Body.setPosition(a.body, a.start);
+    MATTER_RT.Body.setVelocity(a.body, { x: 0, y: 0 });
+    MATTER_RT.Body.setAngularVelocity(a.body, 0);
     a.active = false;
     a.pitMs = 0;
     a.stuck = 0;
@@ -2425,8 +2592,8 @@ function createLevelRuntime(opts) {
       if (p.isStatic) {
         p.plugin.graceMs -= dtMs;
         if (p.plugin.graceMs <= 0) {
-          MATTER.Body.setStatic(p, false);
-          if (Number.isFinite(p.plugin.vx0)) MATTER.Body.setVelocity(p, { x: p.plugin.vx0, y: 0 });
+          MATTER_RT.Body.setStatic(p, false);
+          if (Number.isFinite(p.plugin.vx0)) MATTER_RT.Body.setVelocity(p, { x: p.plugin.vx0, y: 0 });
           emit('prop:release', { kind: p.plugin.kind });
         }
       }
@@ -2441,12 +2608,12 @@ function createLevelRuntime(opts) {
       if (p.plugin.stallMs > 3000) {
         p.plugin.stallMs = 0;
         fail('prop-stalled');
-        MATTER.Body.setPosition(p, p.plugin.home);
-        MATTER.Body.setVelocity(p, { x: 0, y: 0 });
-        MATTER.Body.setAngle(p, 0);
-        MATTER.Body.setAngularVelocity(p, 0);
+        MATTER_RT.Body.setPosition(p, p.plugin.home);
+        MATTER_RT.Body.setVelocity(p, { x: 0, y: 0 });
+        MATTER_RT.Body.setAngle(p, 0);
+        MATTER_RT.Body.setAngularVelocity(p, 0);
         p.plugin.graceMs = 1200;
-        MATTER.Body.setStatic(p, true);
+        MATTER_RT.Body.setStatic(p, true);
         resetActorForRetry();
       }
     }
@@ -2457,12 +2624,12 @@ function createLevelRuntime(opts) {
     if (limit == null) return;
     for (const p of state.props) {
       if (p.position.y > limit) {
-        MATTER.Body.setPosition(p, p.plugin.home);
-        MATTER.Body.setVelocity(p, { x: 0, y: 0 });
-        MATTER.Body.setAngle(p, 0);
-        MATTER.Body.setAngularVelocity(p, 0);
+        MATTER_RT.Body.setPosition(p, p.plugin.home);
+        MATTER_RT.Body.setVelocity(p, { x: 0, y: 0 });
+        MATTER_RT.Body.setAngle(p, 0);
+        MATTER_RT.Body.setAngularVelocity(p, 0);
         p.plugin.graceMs = 1400;
-        MATTER.Body.setStatic(p, true);
+        MATTER_RT.Body.setStatic(p, true);
         fail('prop-lost');
         resetActorForRetry();
       }
@@ -2479,7 +2646,7 @@ function createLevelRuntime(opts) {
           if (b.plugin && b.plugin.landingFrames > 0) {
             b.plugin.landingFrames--;
             if (b.velocity.y > LANDING_MAX_FALL_SPEED) {
-              MATTER.Body.setVelocity(b, { x: b.velocity.x, y: LANDING_MAX_FALL_SPEED });
+              MATTER_RT.Body.setVelocity(b, { x: b.velocity.x, y: LANDING_MAX_FALL_SPEED });
             }
           }
         }
@@ -2504,6 +2671,14 @@ function createLevelRuntime(opts) {
     updatePropReset();
     updatePlates(dt);
     updatePlateSoftFail(dt);
+    // 淡出中的造物：透明度线性衰减，归零才真正移除
+    for (const c of state.creatures.slice()) {
+      if (!(c.fadeMs > 0)) continue;
+      c.fadeMs -= dt;
+      const a = Math.max(0, c.fadeMs / CREATURE_FADE_MS);
+      for (const b of c.bodies) { b.render = b.render || {}; b.render.opacity = a; }
+      if (c.fadeMs <= 0) despawnCreature(c);
+    }
     // 掉出世界的造物回收，避免越积越多
     for (const c of state.creatures.slice()) {
       const lowest = Math.max(...c.bodies.map((b) => b.position.y));
@@ -2906,23 +3081,36 @@ const AudioBus = createAudioBus();
 ;
 /* src/text/lines.js */
 /**
- * src/text/lines.js —— 台词表（P0 的 10 条 + 失败提示）
- * 语音一句话都不要硬写在画面代码里：画面只查 id，音频侧按 id 出声，无中文语音时同一份文本走气泡。
+ * src/text/lines.js —— 台词表
+ * **文本唯一来源是 `docs/levels.md` 第九节 9.2 表**，一律逐字照抄，不许自拟（音频侧按同一份文本对齐）。
+ * 画面只查 id；音频侧按 id 出声；无中文语音时同一份文本走气泡。
+ *
+ * 绑定规则（D8-A1 / levels.md §338）：
+ *   · 开场句 → 进关那一刻
+ *   · 首次成功句 → **成功事件那一刻**，不是定时器连播
+ *   · 关1 成功句必须在盖章音效**之前**念完；剩余时长 < 朗读时长 + 0.3s 则整句丢弃、只留盖章
  */
 
 const LINES = {
-  l1_intro: { who: '农夫', text: '这条沟我跳了四十年。今天不跳了。' },
-  l1_intro2: { who: '农夫', text: '能踩。它没抱怨。' },
-  l1_win: { who: '农夫', text: '它比我信得过。' },
-  common_fail1: { who: '农夫', text: '这玩意儿我踩上去就得下去。' },
+  // 9.2 表：关卡开场 9 条中的第 1 章 3 条
+  l1_intro: { who: '农夫', text: '你是谁？' },
   l2_intro: { who: '农夫', text: '它不肯走。它是方的。' },
+  l3_intro: { who: '水泵', text: '你踩不动我。别试了。' },
+  // 9.2 表：首次成功 9 条中的第 1 章 3 条
+  l1_win: { who: '农夫', text: '能踩。它没抱怨。' },
   l2_win: { who: '农夫', text: '它动了！它自己动的。' },
-  common_fail2: { who: '农夫', text: '它现在是一条鱼了。' },
-  l3_intro: { who: '农夫', text: '这水泵要压足重量才出水，我站上去它不动。' },
-  l3_win: { who: '农夫', text: '水出来了。你是造物主还是水电工？' },
-  common_fail3: { who: '农夫', text: '压板连晃都没晃。' },
-  stamp: { who: '画外音', text: '已阅。' },
-  no_voice: { who: '画外音', text: '（这台设备没有中文语音，台词改由气泡显示）' },
+  l3_win: { who: '水泵', text: '出水了。三十年没这么顺。' },
+  // levels.md 附录 A「落地形状分岔台词」6 条**闭集**，表外不许自拟；同句整局最多 2 次，超额静默
+  form_beam: { who: '农夫', text: '这东西能踩吗？' },
+  form_wheel: { who: '农夫', text: '圆的。它会自己跑。' },
+  form_blob: { who: '农夫', text: '你是不是想让我踩这个？' },
+  form_pile: { who: '农夫', text: '你画了三个。我只有一双脚。' },
+  form_container: { who: '农夫', text: '这玩意儿能装东西？' },
+  form_grain: { who: '农夫', text: '这么小？吹口气就没了。' },
+  // 9.2 表：连续失败 2 次（通用）
+  common_fail2: { who: '农夫', text: '不急。我等你。真的。' },
+  // 9.2 表：章节盖章（第 1 章）
+  stamp1: { who: '章印', text: '第一章：东西肯听话了。' },
 };
 
 /** 台词文本；未知 id 返回 null（调用方决定不显示） */
@@ -2943,17 +3131,22 @@ function estimateSpeechMs(text) {
 }
 
 /**
- * 关1 的硬约束：第 2 句「能踩。它没抱怨。」必须在盖章音效**之前**完整念完，
- * 剩余时间不够就丢弃这句、只留盖章（宁少一句，不许叠音）。
+ * 关1 的硬约束判据：这句台词能不能在盖章之前完整念完。
+ * levels.md §338：剩余时长 < 朗读时长 + 0.3s → 整句丢弃，只留盖章；
+ * 不允许把第 2 句挪到盖章之后。
  */
 function canFitBeforeStamp(text, remainingMs) {
-  return estimateSpeechMs(text) <= Math.max(0, remainingMs);
+  return estimateSpeechMs(text) + 300 <= Math.max(0, remainingMs);
 }
 ;
 /* src/level/levels/ch1-01.js */
 /**
  * src/level/levels/ch1-01.js —— 关1 一个洞（难度 1，无机关）
- * 地形坐标一律 **中心点 + 宽高**（{x,y,w,h} 的 x/y 是 body 中心），旋转地形再加 angle。
+ * 地形坐标一律 **中心点 + 宽高**（{x,y,w,h} 的 x/y 是 body 中心）。
+ *
+ * 构图（阶段2 复审后重做）：横向构图，两岸地平线**对齐同一条水平线 y=430**，
+ * 中间是又深又暗的沟（下到底就上不来），农夫站在左岸地面上，田在右岸地面上。
+ * 沟宽 170px？不 —— 100px（164..334），约三个身位（农夫直径 28），玩家一眼能判断梁要跨多远。
  */
 const LEVEL_CH1_01 = {
   id: 'ch1-01',
@@ -2963,33 +3156,40 @@ const LEVEL_CH1_01 = {
   chips: ['harden'],
   spawnY: 84,
   terrain: [
-    { x: 73.5, y: 440, w: 187, h: 220, mat: 'ground' },   // 左岸 顶面 y=330（到 x=167）
-    { x: 346.5, y: 440, w: 167, h: 220, mat: 'ground' },  // 右岸 顶面 y=330（从 x=263）
-    { x: 215, y: 487, w: 96, h: 70, mat: 'ground' },      // 沟底 顶面 y=452（造物掉进去当装饰）
+    { x: 82, y: 471, w: 164, h: 82, mat: 'ground' },    // 左岸：x 0..164，顶面 430
+    { x: 382, y: 471, w: 96, h: 82, mat: 'ground' },    // 右岸（他的田）：x 334..430，顶面 430
   ],
-  actors: [{ kind: 'walker', x: 55, y: 314, targetX: 392, label: '农夫' }],
+  actors: [{ kind: 'walker', x: 58, y: 416, targetX: 392, label: '农夫' }],
   props: [],
   plates: [],
-  goal: { type: 'reachActor', x: 372, maxY: 392 },
-  resetActorIfBelowY: 420,     // 掉进沟里超过这个 y 就判一次失败
-  guides: [{ x: 167 }, { x: 263 }],
+  goal: { type: 'reachActor', x: 372, maxY: 446 },
+  resetActorIfBelowY: 560,
+  guides: [{ x: 164 }, { x: 334 }],
   hints: {
-    highlight: [{ x: 167, y: 330, r: 26 }, { x: 263, y: 330, r: 26 }],
-    beamOutline: { x1: 150, y1: 322, x2: 280, y2: 330 },
+    highlight: [{ x: 164, y: 430, r: 22 }, { x: 334, y: 430, r: 22 }],
+    beamOutline: { x1: 148, y1: 438, x2: 352, y2: 440 },
   },
   scenery: [
-    { kind: 'line', x1: 0, y1: 330, x2: 430, y2: 330, width: 2 },
-    { kind: 'text', x: 392, y: 306, text: '他的田', size: 11, align: 'right' },
-    { kind: 'circle', x: 320, y: 318, r: 7 },
-    { kind: 'circle', x: 345, y: 322, r: 6 },
-    { kind: 'circle', x: 300, y: 324, r: 5 },
-    { kind: 'rect', x: 40, y: 292, w: 46, h: 38 },
-    { kind: 'line', x1: 62, y1: 273, x2: 40, y2: 292, width: 2 },
-    { kind: 'line', x1: 62, y1: 273, x2: 86, y2: 292, width: 2 },
-    { kind: 'text', x: 215, y: 470, text: '（沟）', size: 10, align: 'center' },
+    { kind: 'hills' },
+    { kind: 'chasm', x1: 164, x2: 334, y: 430, depth: 83 },
+    { kind: 'line', x1: 0, y1: 430, x2: 164, y2: 430, width: 2.5 },
+    { kind: 'line', x1: 334, y1: 430, x2: 430, y2: 430, width: 2.5 },
+    // 左岸：两丛草，让"地"不是一块空板
+    { kind: 'crops', x1: 24, x2: 40, y: 430, n: 2, h: 8 },
+    { kind: 'crops', x1: 104, x2: 124, y: 430, n: 2, h: 9 },
+    // 右岸＝他的田：矮土垄 + 三根作物 + 木牌（三样东西一眼认成田）
+    { kind: 'ridge', x1: 336, x2: 428, y: 430, h: 9 },
+    { kind: 'crops', x1: 372, x2: 420, y: 430, n: 3, h: 26 },
+    { kind: 'sign', x: 353, y: 430, text: '田' },
+    { kind: 'text', x: 382, y: 480, text: '他的田', size: 10, align: 'center' },
+    { kind: 'text', x: 249, y: 470, text: '↓ 下去就上不来', size: 10, align: 'center', tone: 'light' },
   ],
-  lines: { intro: 'l1_intro', win: 'l1_win', failStreak: 'common_fail2', stamp: 'ch1_stamp' },
-  failHints: ['再画长一点：梁要跨过整道沟。', '沟沿会发光——那也是能踩的地方。', '照虚线画一条，加上「变硬」。'],
+  lines: { intro: 'l1_intro', win: 'l1_win', failStreak: 'common_fail2', stamp: null },
+  failHints: [
+    '两头都要搭到岸上才算桥。虚线是沟的两端。',
+    '中缝会折的桥踩上去会塌——点「变硬」把造物冻成一块整的。',
+    '扁长的梁最好用：从这头一直拉到那头，再点「变硬」。',
+  ],
 };
 ;
 /* src/level/levels/ch1-02.js */
@@ -3057,9 +3257,14 @@ const LEVEL_CH1_02 = {
   ],
   lines: { intro: 'l2_intro', win: 'l2_win', failStreak: 'common_fail2', stamp: null },
   failHints: [
-    '南瓜只会往下走。桥要横在沟里、两头都搭到河岸上，让南瓜从高台落到桥面。',
+    // 第 1 次失败：**按形态分岔**（关2 的方向型对照）。
+    // 玩家刚在关1 学会"长条=桥"，进关2 第一反应必画梁——这一句要让他试一次就换方向，
+    // 而不是反复重画梁（那样对照组就白设了）。纯文字，不朗读（语音位在"连续失败 2 次"）。
+    { beam: '梁撑得住。南瓜我抬不动。', other: '它得先下去，还不能碎。' },
     '中缝会折的软梁接不住 13kg 的南瓜，落地就塌——点「变硬」把它冻成一块整的。',
     '梁或团块都行，两头压住两岸，再点「变硬」。团块别画太厚，顶到高台边会挡住南瓜。',
+    // ↑ 第 2/3 条仍是**旧几何**的文案；关2 按 B 版重建时同步换成
+    //   「坡上两级自然起伏发光」+「轮的轮廓虚线」两条暗示（见 levels.md 关2 改版）。
   ],
 };
 ;
@@ -3213,6 +3418,17 @@ function boot() {
     view.bubble = { who: '', text, until: mainNow() + (ms || 1800) };
   }
 
+  const formSaid = new Map();
+  /** 落地形状分岔台词：闭集、同句 ≤2 次、超额静默（绝不换同义句填空，换句会被读成“形状变了”） */
+  function sayFormLine(form) {
+    const id = 'form_' + form;
+    if (!lineText(id)) return;                 // 表外不发声、不臆造
+    const n = formSaid.get(id) || 0;
+    if (n >= 2) return;
+    formSaid.set(id, n + 1);
+    say(id, 2200);
+  }
+
   function currentLevel() { return GAME_LEVELS[view.levelIndex]; }
 
   function buildWorld() {
@@ -3244,13 +3460,12 @@ function boot() {
       return;
     }
     StrokeBudget.push(analysis.pointCount);
-    if (runtime.state.activeCreature) {
-      // 一次只有一个造物（阶段2 的简化：新画覆盖旧画）
-      bus.emit('creature:replace', {});
-    }
+
     const c = runtime.spawnCreature({ form: analysis.form, geo: analysis, thickness: MAIN_THICKNESS });
     if (c) {
       AudioBus.play('spawn');
+      // levels.md 附录 A：落地形状分岔台词（6 条闭集），同句整局最多 2 次，超额静默不改写
+      sayFormLine(analysis.form);
       view.snapshot = runtime.snapshot();
     }
   }
@@ -3265,10 +3480,7 @@ function boot() {
   function retryLevel() {
     if (winTimer) { clearTimeout(winTimer); winTimer = 0; }
     buildWorld();
-    say(view.level.lines.intro, 3200);
-    if (view.levelIndex === 0) {
-      setTimeout(() => { if (!view.win) say('l1_intro2', 2600); }, 2600);
-    }
+    say(view.level.lines.intro, 3200);   // 开场句：只在进关这一刻播，不排第二句
   }
 
   function nextLevel() {
@@ -3288,20 +3500,23 @@ function boot() {
     progress.maxUnlocked = Math.max(progress.maxUnlocked, Math.min(GAME_LEVELS.length, view.levelIndex + 2));
     progress.seconds = (progress.seconds || 0) + Math.round((payload.elapsedMs || 0) / 1000);
     saveProgress(store, progress);
-    // 关1 的硬约束：第 2 句必须在盖章音效之前**完整**念完；时间不够就丢弃这句、只留盖章。
+    // 首次成功句：绑在【成功这一刻】（D8-A1），不是定时器连播
+    const winLine = lineText(lv.lines.win);
+    const stampAt = view.levelIndex === 0 ? 3200 : 1400;
     if (view.levelIndex === 0) {
-      say(lv.lines.win, 2400);
-      const gapMs = 1600;
-      const tail = lineText('l1_intro2');
-      if (canFitBeforeStamp(tail, gapMs - 260)) {
-        setTimeout(() => say('l1_intro2', 1800), gapMs);
-        setTimeout(() => AudioBus.play('stamp'), gapMs + estimateSpeechMs(tail));
+      // 关1 硬约束：这句必须在盖章音效之前完整念完；装不下就整句丢弃、只留盖章
+      if (canFitBeforeStamp(winLine, stampAt)) {
+        say(lv.lines.win, stampAt - 200);
+        setTimeout(() => AudioBus.play('stamp'), stampAt);
       } else {
-        setTimeout(() => AudioBus.play('stamp'), gapMs);
+        setTimeout(() => AudioBus.play('stamp'), 1600);
       }
     } else {
       say(lv.lines.win, 2600);
-      setTimeout(() => AudioBus.play('stamp'), 1400);
+      setTimeout(() => {
+        AudioBus.play('stamp');
+        if (view.levelIndex === GAME_LEVELS.length - 1) say('stamp1', 2600);
+      }, stampAt);
     }
     winTimer = setTimeout(() => { winTimer = 0; }, 600);
   }
@@ -3332,7 +3547,7 @@ function boot() {
       else nextLevel();
       return true;
     }
-    const btn = buttonAt(x, y);
+    const btn = headerButtonAt(x, y);
     if (btn === 'retry') { AudioBus.play('ui'); retryLevel(); return true; }
     if (btn === 'audio') {
       view.audioOn = !view.audioOn;
@@ -3340,7 +3555,7 @@ function boot() {
       AudioBus.play('ui');
       return true;
     }
-    const ci = chipIndexAt(x, y);
+    const ci = chipIndexAt(x, y, (view.level.chips || []).length);
     if (ci >= 0) {
       const id = (view.level.chips || [])[ci];
       if (!id || IMPLEMENTED_ABILITY_IDS.indexOf(id) < 0) return true;
@@ -3401,18 +3616,47 @@ function boot() {
       ctx.strokeStyle = '#5b5344';
       ctx.lineWidth = 2;
       ctx.strokeRect(-t.w / 2, -t.h / 2, t.w, t.h);
+      // 土：表土暗带 + 斜向土纹，避免地面读成一块纯色板
+      if (!isIce) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(-t.w / 2, -t.h / 2, t.w, t.h);
+        ctx.clip();
+        ctx.fillStyle = 'rgba(120,104,74,0.30)';
+        ctx.fillRect(-t.w / 2, -t.h / 2, t.w, 9);
+        ctx.strokeStyle = 'rgba(110,96,70,0.26)';
+        ctx.lineWidth = 1;
+        for (let hx = -t.w / 2 - t.h; hx < t.w / 2; hx += 13) {
+          ctx.beginPath();
+          ctx.moveTo(hx, t.h / 2);
+          ctx.lineTo(hx + t.h, -t.h / 2);
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
       ctx.restore();
     }
-    // 沟的虚线
+    // 沟沿刻度：只在沟口上方留一小段（32px）+ 一个朝下的小三角。
+    // 原来是从 y=150 一路贯穿到沟底，把云和山都切开了，读起来像施工辅助线漏进成品。
+    // 信息（"梁要跨到这里"）保住，杂线去掉。
     for (const g of lv.guides || []) {
+      const rim = g.y == null ? 430 : g.y;
       ctx.save();
-      ctx.setLineDash([5, 6]);
-      ctx.strokeStyle = 'rgba(120,60,40,0.45)';
-      ctx.lineWidth = 1.4;
+      ctx.strokeStyle = 'rgba(120,60,40,0.55)';
+      ctx.lineWidth = 1.6;
+      ctx.setLineDash([4, 5]);
       ctx.beginPath();
-      ctx.moveTo(g.x, 150);
-      ctx.lineTo(g.x, WORLD_H - 8);
+      ctx.moveTo(g.x, rim - 40);
+      ctx.lineTo(g.x, rim - 4);
       ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      ctx.moveTo(g.x - 4.5, rim - 11);
+      ctx.lineTo(g.x, rim - 3);
+      ctx.lineTo(g.x + 4.5, rim - 11);
+      ctx.closePath();
+      ctx.fillStyle = 'rgba(120,60,40,0.6)';
+      ctx.fill();
       ctx.restore();
     }
     // 提示轮廓（只在第一次失败后出现）
@@ -3445,8 +3689,96 @@ function boot() {
         ctx.strokeStyle = 'rgba(70,62,50,0.75)';
         ctx.lineWidth = 1.6;
         ctx.strokeRect(s.x - s.w / 2, s.y - s.h / 2, s.w, s.h);
+      } else if (s.kind === 'hills') {
+        // 远山剪影 + 一朵云 + 两只鸟：不让天空留成纯空（空的部分会被读成“画面没加载完”）
+        ctx.fillStyle = 'rgba(158,158,136,0.34)';
+        ctx.beginPath();
+        ctx.moveTo(-10, 300); ctx.lineTo(96, 214); ctx.lineTo(206, 300); ctx.closePath(); ctx.fill();
+        ctx.fillStyle = 'rgba(158,158,136,0.22)';
+        ctx.beginPath();
+        ctx.moveTo(140, 300); ctx.lineTo(262, 236); ctx.lineTo(400, 300); ctx.closePath(); ctx.fill();
+        ctx.fillStyle = 'rgba(255,255,255,0.55)';
+        ctx.beginPath();
+        ctx.ellipse(318, 186, 34, 13, 0, 0, Math.PI * 2);
+        ctx.ellipse(292, 190, 22, 10, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(90,84,70,0.55)';
+        ctx.lineWidth = 1.5;
+        const bird = (bx, by, r) => {
+          ctx.beginPath();
+          ctx.moveTo(bx - r * 2, by);
+          ctx.quadraticCurveTo(bx - r, by - r, bx, by);
+          ctx.quadraticCurveTo(bx + r, by - r, bx + r * 2, by);
+          ctx.stroke();
+        };
+        bird(104, 152, 4.5);
+        bird(146, 132, 3.6);
+        bird(372, 150, 3.2);
+      } else if (s.kind === 'chasm') {
+        // 又深又暗的沟：明确“下去就上不来”，并在沟壁上放几块碎石
+        const g = ctx.createLinearGradient(0, s.y, 0, s.y + (s.depth || 80));
+        g.addColorStop(0, 'rgba(52,44,38,0.86)');
+        g.addColorStop(0.55, 'rgba(28,24,21,0.95)');
+        g.addColorStop(1, 'rgba(12,10,9,1)');
+        ctx.fillStyle = g;
+        ctx.fillRect(s.x1, s.y, s.x2 - s.x1, s.depth || 80);
+        ctx.fillStyle = 'rgba(120,110,96,0.5)';
+        ctx.beginPath(); ctx.arc(s.x1 + 18, s.y + 62, 5, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.arc(s.x1 + 34, s.y + 74, 3.5, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.arc(s.x2 - 22, s.y + 58, 4.5, 0, Math.PI * 2); ctx.fill();
+        ctx.strokeStyle = 'rgba(60,52,44,0.9)';
+        ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(s.x1, s.y); ctx.lineTo(s.x1, s.y + (s.depth || 80)); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(s.x2, s.y); ctx.lineTo(s.x2, s.y + (s.depth || 80)); ctx.stroke();
+      } else if (s.kind === 'crops') {
+        // 作物：竖杆 + 三叉穗 + 一片叶；三笔就能认成"庄稼"
+        const n = s.n || 3;
+        for (let i = 0; i < n; i++) {
+          const cx = n === 1 ? s.x1 : s.x1 + (s.x2 - s.x1) * (i / (n - 1));
+          const hh = (s.h || 18) + (i % 2) * 4;
+          ctx.strokeStyle = 'rgba(96,86,62,0.9)';
+          ctx.lineWidth = 1.6;
+          ctx.beginPath(); ctx.moveTo(cx, s.y); ctx.lineTo(cx, s.y - hh); ctx.stroke();
+          ctx.beginPath();
+          ctx.moveTo(cx, s.y - hh + 3); ctx.lineTo(cx - 3.4, s.y - hh - 4);
+          ctx.moveTo(cx, s.y - hh + 3); ctx.lineTo(cx + 3.4, s.y - hh - 4);
+          ctx.moveTo(cx, s.y - hh * 0.55); ctx.lineTo(cx + 4.6, s.y - hh * 0.55 - 3.4);
+          ctx.stroke();
+        }
+      } else if (s.kind === 'ridge') {
+        // 矮土垄：一条微微拱起的土带
+        ctx.beginPath();
+        ctx.moveTo(s.x1, s.y + 1);
+        ctx.quadraticCurveTo((s.x1 + s.x2) / 2, s.y - (s.h || 8), s.x2, s.y + 1);
+        ctx.closePath();
+        ctx.fillStyle = 'rgba(140,118,82,0.55)';
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(84,74,58,0.65)';
+        ctx.lineWidth = 1.2;
+        ctx.stroke();
+      } else if (s.kind === 'sign') {
+        // 木牌：立柱 + 牌面 + 一个字
+        ctx.strokeStyle = 'rgba(84,74,58,0.9)';
+        ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(s.x, s.y); ctx.lineTo(s.x, s.y - 17); ctx.stroke();
+        ctx.fillStyle = '#ece0c4';
+        ctx.fillRect(s.x - 9, s.y - 31, 18, 14);
+        ctx.lineWidth = 1.3;
+        ctx.strokeRect(s.x - 9, s.y - 31, 18, 14);
+        ctx.fillStyle = '#4a4335';
+        ctx.font = '10px system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(s.text || '田', s.x, s.y - 20);
+        ctx.textAlign = 'left';
+      } else if (s.kind === 'fence') {
+        ctx.strokeStyle = 'rgba(84,74,60,0.75)';
+        ctx.lineWidth = 1.6;
+        for (let fx = s.x1; fx <= s.x2; fx += 12) {
+          ctx.beginPath(); ctx.moveTo(fx, s.y); ctx.lineTo(fx, s.y - 12); ctx.stroke();
+        }
+        ctx.beginPath(); ctx.moveTo(s.x1, s.y - 8); ctx.lineTo(s.x2, s.y - 8); ctx.stroke();
       } else if (s.kind === 'text') {
-        ctx.fillStyle = 'rgba(90,80,64,0.8)';
+        ctx.fillStyle = s.tone === 'light' ? 'rgba(242,234,216,0.8)' : 'rgba(90,80,64,0.8)';
         ctx.font = (s.size || 10) + 'px system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif';
         ctx.textAlign = s.align || 'left';
         ctx.fillText(s.text, s.x, s.y);
@@ -3485,21 +3817,17 @@ function boot() {
         continue;
       }
       if (b.label === 'actor') {
-        ctx.beginPath();
-        ctx.arc(b.position.x, b.position.y, b.circleRadius || 14, 0, Math.PI * 2);
-        ctx.fillStyle = '#4a6f8c';
-        ctx.fill();
-        ctx.strokeStyle = '#2c4457';
-        ctx.lineWidth = 2;
-        ctx.stroke();
-        ctx.beginPath();
-        ctx.arc(b.position.x + 4, b.position.y - 4, 2, 0, Math.PI * 2);
-        ctx.fillStyle = '#f4efe2';
-        ctx.fill();
+        // 人形，不是一个圈：草帽+头+身+两臂+两腿（细节见 handdrawn.drawFarmer）
+        const vx = (b.velocity && b.velocity.x) || 0;
+        const face = vx < -0.2 ? -1 : 1;
+        b.plugin = b.plugin || {};
+        b.plugin.gait = (b.plugin.gait || 0) + Math.abs(vx) * 0.055;
+        drawFarmer(ctx, b.position.x, b.position.y, { phase: b.plugin.gait, face });
         continue;
       }
       // 造物（含 compound 的子 parts）
       const parts = b.parts && b.parts.length > 1 ? b.parts.slice(1) : [b];
+      ctx.globalAlpha = b.render && b.render.opacity != null ? b.render.opacity : 1;
       for (const part of parts) {
         if (!part.vertices || !part.vertices.length) continue;
         if (part.circleRadius) {
@@ -3513,6 +3841,7 @@ function boot() {
         ctx.lineWidth = 2;
         ctx.stroke();
       }
+      ctx.globalAlpha = 1;
     }
   }
 
@@ -3565,14 +3894,7 @@ function boot() {
 
   buildWorld();
   requestAnimationFrame(frame);
-  setTimeout(() => {
-    if (view.levelIndex === 0) {
-      say(view.level.lines.intro, 3200);
-      setTimeout(() => { if (!view.win) say('l1_intro2', 2600); }, 2600);
-    } else {
-      say(view.level.lines.intro, 3200);
-    }
-  }, 240);
+  setTimeout(() => { say(view.level.lines.intro, 3200); }, 240);   // 开场句：进关那一刻，仅一句
 
   return {
     view, bus, surface, store, progress,

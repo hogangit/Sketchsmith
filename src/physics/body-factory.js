@@ -10,7 +10,7 @@ import {
 import { DECOMP_MAX_PARTS, ROPE_JOINT_MAX } from '../stroke/thresholds.js';
 import { geoConvexHull, geoResample, geoPolylineLength } from '../stroke/geometry.js';
 
-/* MATTER 由 physics/world.js 在同一打包作用域声明（兜底拼接器 D3：顶层名全仓库唯一） */
+const MATTER_BF = typeof Matter !== 'undefined' ? Matter : globalThis.Matter;  // 本文件专用别名（兜底拼接器 D3：顶层名全仓库唯一）
 
 function isFinitePt(p) {
   return p && Number.isFinite(p.x) && Number.isFinite(p.y);
@@ -51,7 +51,7 @@ export function bodyFromPolygon(points, spawn, options) {
   // 一级：交给 matter 的 fromVertices（内部用 poly-decomp 拆凸）
   if (poly.length >= 3) {
     try {
-      const b = MATTER.Bodies.fromVertices(spawn.x, spawn.y, [poly.map((p) => ({ x: p.x, y: p.y }))], base, true);
+      const b = MATTER_BF.Bodies.fromVertices(spawn.x, spawn.y, [poly.map((p) => ({ x: p.x, y: p.y }))], base, true);
       const ok = sanitizeCompound(b, DECOMP_MAX_PARTS);
       if (ok) return { bodies: [ok], degraded: 'none' };
     } catch (err) {
@@ -64,7 +64,7 @@ export function bodyFromPolygon(points, spawn, options) {
     try {
       const hull = geoConvexHull(poly);
       if (hull.length >= 3) {
-        const b = MATTER.Bodies.fromVertices(spawn.x, spawn.y, [hull.map((p) => ({ x: p.x, y: p.y }))], base, true);
+        const b = MATTER_BF.Bodies.fromVertices(spawn.x, spawn.y, [hull.map((p) => ({ x: p.x, y: p.y }))], base, true);
         if (b && b.vertices && b.vertices.length >= 3) {
           for (const v of b.vertices) if (!isFinitePt(v)) throw new Error('hull 顶点非法');
           return { bodies: [b], degraded: 'hull' };
@@ -85,7 +85,7 @@ export function bodyFromPolygon(points, spawn, options) {
   }
   if (isFinite(minX) && maxX - minX > 1 && maxY - minY > 1) {
     try {
-      const b = MATTER.Bodies.rectangle((minX + maxX) / 2, (minY + maxY) / 2, maxX - minX, maxY - minY, base);
+      const b = MATTER_BF.Bodies.rectangle((minX + maxX) / 2, (minY + maxY) / 2, maxX - minX, maxY - minY, base);
       return { bodies: [b], degraded: 'bbox' };
     } catch (err) {
       if (typeof console !== 'undefined') console.warn('[body-factory] 矩形失败，退化到圆', err && err.message);
@@ -94,7 +94,7 @@ export function bodyFromPolygon(points, spawn, options) {
 
   // 四级：圆形（最差也能玩）
   const r = Math.max(WHEEL_MIN_RADIUS, (Number.isFinite(maxX - minX) ? maxX - minX : 0) / 2 || 12);
-  return { bodies: [MATTER.Bodies.circle(spawn.x, spawn.y, r, base)], degraded: 'circle' };
+  return { bodies: [MATTER_BF.Bodies.circle(spawn.x, spawn.y, r, base)], degraded: 'circle' };
 }
 
 /** 把刚体组整体平移到目标点（让落点与虚线引导一致） */
@@ -110,7 +110,7 @@ function recenter(bodies, target) {
   const dx = target.x - mx / tm;
   const dy = target.y - my / tm;
   if (!Number.isFinite(dx) || !Number.isFinite(dy)) return;
-  for (const b of bodies) MATTER.Body.translate(b, { x: dx, y: dy });
+  for (const b of bodies) MATTER_BF.Body.translate(b, { x: dx, y: dy });
 }
 
 /**
@@ -120,12 +120,15 @@ function recenter(bodies, target) {
 function applyMods(bodies, mods) {
   const m = mods || {};
   const densityMul = Number.isFinite(m.densityMul) ? m.densityMul : 1;
+  // 会滚（D16）：只乘空气阻尼；friction / frictionStatic 不从这里改
+  const airMul = Number.isFinite(m.frictionAirMul) ? m.frictionAirMul : 1;
   for (const b of bodies) {
     if (!b.isStatic) {
-      MATTER.Body.setDensity(b, DENSITY_CREATURE * densityMul);
+      MATTER_BF.Body.setDensity(b, DENSITY_CREATURE * densityMul);
       b.friction = m.friction != null ? m.friction : CREATURE_SOFT.friction;
       b.frictionStatic = m.frictionStatic != null ? m.frictionStatic : CREATURE_SOFT.frictionStatic;
-      b.frictionAir = m.frictionAir != null ? m.frictionAir : CREATURE_SOFT.frictionAir;
+      const air = m.frictionAir != null ? m.frictionAir : CREATURE_SOFT.frictionAir;
+      b.frictionAir = air * airMul;
       b.restitution = m.restitution != null ? m.restitution : CREATURE_SOFT.restitution;
       b.slop = 0.02;
     }
@@ -158,16 +161,16 @@ export function buildCreatureBody(spec) {
     const mx = (p0.x + pN.x) / 2;
     const my = (p0.y + pN.y) / 2;
     if (rigid || len < 90) {
-      bodies = [MATTER.Bodies.rectangle(mx, my, len, thickness, { angle })];
+      bodies = [MATTER_BF.Bodies.rectangle(mx, my, len, thickness, { angle })];
     } else {
       // 没变硬 = 软的：两段铰接，压上去会从中折下去（关1 的教学性失败）
       const half = len / 2;
       const dx = Math.cos(angle) * (len / 4);
       const dy = Math.sin(angle) * (len / 4);
-      const left = MATTER.Bodies.rectangle(mx - dx, my - dy, half, thickness, { angle });
-      const right = MATTER.Bodies.rectangle(mx + dx, my + dy, half, thickness, { angle });
+      const left = MATTER_BF.Bodies.rectangle(mx - dx, my - dy, half, thickness, { angle });
+      const right = MATTER_BF.Bodies.rectangle(mx + dx, my + dy, half, thickness, { angle });
       bodies = [left, right];
-      constraints = [MATTER.Constraint.create({
+      constraints = [MATTER_BF.Constraint.create({
         bodyA: left, pointA: { x: half / 2, y: 0 },
         bodyB: right, pointB: { x: -half / 2, y: 0 },
         length: 0, stiffness: SOFT_BEAM_STIFFNESS, render: { visible: false },
@@ -176,10 +179,10 @@ export function buildCreatureBody(spec) {
     }
   } else if (form === 'wheel' && geo) {
     const r = Math.max(WHEEL_MIN_RADIUS, Math.min(geo.bbox.w, geo.bbox.h) / 2);
-    bodies = [MATTER.Bodies.circle(geo.centroid.x, geo.centroid.y, r)];
+    bodies = [MATTER_BF.Bodies.circle(geo.centroid.x, geo.centroid.y, r)];
   } else if (form === 'grain' && geo) {
     const r = Math.min(GRAIN_MAX_RADIUS, Math.max(4, Math.sqrt(Math.max(geo.area, 40) / Math.PI)));
-    bodies = [MATTER.Bodies.circle(geo.centroid.x, geo.centroid.y, r)];
+    bodies = [MATTER_BF.Bodies.circle(geo.centroid.x, geo.centroid.y, r)];
   } else if (form === 'rope' && centerline.length >= 2) {
     // 绳：中心线切成 n 节小刚体 + 铰接约束（首尾相连的多笔才有意义，本轮 UI 未接线）
     const total = geoPolylineLength(centerline);
@@ -189,12 +192,12 @@ export function buildCreatureBody(spec) {
       const a = nodes[i - 1], b = nodes[i];
       const segLen = Math.hypot(b.x - a.x, b.y - a.y);
       const angle = Math.atan2(b.y - a.y, b.x - a.x);
-      bodies.push(MATTER.Bodies.rectangle((a.x + b.x) / 2, (a.y + b.y) / 2, Math.max(6, segLen), thickness, { angle }));
+      bodies.push(MATTER_BF.Bodies.rectangle((a.x + b.x) / 2, (a.y + b.y) / 2, Math.max(6, segLen), thickness, { angle }));
     }
     recenter(bodies, spawn);
     for (let i = 1; i < bodies.length; i++) {
       const segLen = Math.hypot(nodes[i].x - nodes[i - 1].x, nodes[i].y - nodes[i - 1].y);
-      constraints.push(MATTER.Constraint.create({
+      constraints.push(MATTER_BF.Constraint.create({
         bodyA: bodies[i - 1], pointA: { x: segLen / 2, y: 0 },
         bodyB: bodies[i], pointB: { x: -segLen / 2, y: 0 },
         length: 0, stiffness: 0.9, render: { visible: false },
@@ -204,7 +207,7 @@ export function buildCreatureBody(spec) {
     // 松散堆：每笔一块小刚体（本轮 UI 一笔一组，走不到这里；管线与单测覆盖）
     for (const strokePts of geo.prepared) {
       const r = Math.max(6, Math.min(18, Math.sqrt(Math.max(60, strokePts.length * 6) / Math.PI)));
-      bodies.push(MATTER.Bodies.circle(strokePts[0].x, strokePts[0].y, r));
+      bodies.push(MATTER_BF.Bodies.circle(strokePts[0].x, strokePts[0].y, r));
     }
   } else if (poly.length >= 3 && geo && geo.closed) {
     const r = bodyFromPolygon(poly, spawn, {});
@@ -218,10 +221,10 @@ export function buildCreatureBody(spec) {
   } else if (geo && geo.bbox) {
     const w = Math.max(BEAM_MIN_THICKNESS * 2, geo.bbox.w);
     const h = Math.max(BEAM_MIN_THICKNESS * 2, geo.bbox.h);
-    bodies = [MATTER.Bodies.rectangle(geo.bbox.cx, geo.bbox.cy, w, h)];
+    bodies = [MATTER_BF.Bodies.rectangle(geo.bbox.cx, geo.bbox.cy, w, h)];
     degraded = 'bbox';
   } else {
-    bodies = [MATTER.Bodies.circle(spawn.x, spawn.y, 12)];
+    bodies = [MATTER_BF.Bodies.circle(spawn.x, spawn.y, 12)];
     degraded = 'circle';
   }
 

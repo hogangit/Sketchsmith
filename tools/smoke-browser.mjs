@@ -23,7 +23,7 @@ const VIEW = { width: 430, height: 932, deviceScaleFactor: 2, mobile: true };
 const HEADFUL = process.argv.includes('--headful');
 
 const CASES = [
-  { level: 0, name: 'L1 梁+变硬', line: [150, 700, 285, 702], ability: 'harden' },
+  { level: 0, name: 'L1 梁+变硬', line: [148, 700, 352, 703], ability: 'harden' },
   { level: 1, name: 'L2 梁+变硬', line: [182, 700, 356, 704], ability: 'harden' },
   { level: 2, name: 'L3 团块+变重', circle: [340, 700, 34], ability: 'heavy' },
 ];

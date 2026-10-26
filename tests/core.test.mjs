@@ -5,7 +5,9 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { loadGameEnv, synthLine, synthRect, synthCircle } from './helpers/env.mjs';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { loadGameEnv, ROOT, synthLine, synthRect, synthCircle } from './helpers/env.mjs';
 
 const env = await loadGameEnv();
 const { geometry, simplify, classify, compose, registry, combos } = env;
@@ -56,13 +58,19 @@ test('判定树 2b：两笔相连且细长 → 梁（不是绳，绳在 v1 未�
   assert.equal(g.form === 'rope', false);
 });
 
-test('能力合成 R1–R3：layer 顺序 + 密度乘算 + 覆盖记入 notes', () => {
+test('能力合成 R1–R3：乘算键 + 会滚一个 friction 都不写（D16）', () => {
   const c1 = compose.composeAbilities(['heavy', 'light']);
   assert.ok(Math.abs(c1.mods.densityMul - 0.6) < 1e-9, '密度乘算应为 3 × 0.2');
   const c2 = compose.composeAbilities(['harden', 'roll']);
-  assert.equal(c2.mods.friction, 0.02, 'motion 层（会滚）应覆盖 material 层（变硬）的摩擦');
+  assert.equal(c2.mods.friction, 0.9, '会滚不许写 friction：摩擦必须仍是变硬的 0.9');
+  assert.ok(Math.abs(c2.mods.frictionAirMul - 0.25) < 1e-9, '会滚只压空气阻尼 ×0.25');
   assert.equal(c2.flags.rigid, true, '变硬的 rigid 标记必须保留');
-  assert.ok(c2.notes.some((n) => n.type === 'override' && n.key === 'friction'), '覆盖必须留痕（可审计）');
+  // 覆盖记痕机制仍在（未来能力会用到），但本轮 4 个能力写的是互斥键/乘算键，不该触发
+  assert.equal(c2.notes.some((n) => n.type === 'override' && n.key === 'friction'), false,
+    '会滚不写 friction，就不该出现 friction 覆盖记录');
+  const c3 = compose.composeAbilities(['roll', 'harden']);
+  assert.equal(c3.mods.friction, 0.9, '点选顺序不影响结果');
+  assert.ok(Math.abs(c3.mods.frictionAirMul - 0.25) < 1e-9, '点选顺序不影响乘算键');
 });
 
 test('能力上限：每造物最多 2 枚（runtime 侧拒绝第 3 枚）', () => {
@@ -125,4 +133,22 @@ test('upgradeProgress：脏数据降级成默认进度，不抛异常', () => {
   assert.equal(storage.upgradeProgress(null).schema, 2);
   assert.equal(storage.upgradeProgress('乱码').schema, 2);
   assert.equal(storage.upgradeProgress({ schema: 2, cleared: 'x' }).cleared && typeof storage.upgradeProgress({ schema: 2, cleared: 'x' }).cleared, 'object');
+});
+
+
+test('关2 首次失败提示按形态分岔（方向型对照）', async () => {
+  const { pickFailHint } = await import(pathToFileURL(path.join(ROOT, 'src/render/hud.js')).href);
+  const hints = [{ beam: '梁撑得住。南瓜我抬不动。', other: '它得先下去，还不能碎。' }, '第二次'];
+  assert.equal(pickFailHint(hints, 1, 'beam'), '梁撑得住。南瓜我抬不动。', '梁 → 否掉方向');
+  assert.equal(pickFailHint(hints, 1, 'wheel'), '它得先下去，还不能碎。', '轮 → 常规暗示');
+  assert.equal(pickFailHint(hints, 1, 'blob'), '它得先下去，还不能碎。', '团块 → 常规暗示');
+  assert.equal(pickFailHint(hints, 2, 'beam'), '第二次', '第 2 次起回到阶梯文案');
+  assert.equal(pickFailHint(hints, 0, 'beam'), '', '没失败就不提示');
+  // 禁止话术判据：提示只能否方向，不许否玩家的手法
+  const all = ['梁撑得住。南瓜我抬不动。', '它得先下去，还不能碎。'];
+  for (const line of all) {
+    for (const banned of ['再试试', '再画长一点', '这次可能行', '不太行']) {
+      assert.equal(line.indexOf(banned) >= 0, false, '提示里不许出现「' + banned + '」');
+    }
+  }
 });

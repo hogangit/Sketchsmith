@@ -32,12 +32,13 @@ export const ABILITIES = {
   roll: {
     id: 'roll', name: '会滚', chapter: 2,
     layer: 'motion', priority: 20,
-    mods: { friction: CREATURE_ROLL.friction, frictionStatic: CREATURE_ROLL.frictionStatic },
+    // D16：只压空气阻尼，friction / frictionStatic 一个字都不动（动了就等于把造物钉在地上）
+    mods: { frictionAirMul: CREATURE_ROLL.frictionAirMul },
     flags: { rolling: true },
     hooks: {},
     tags: ['motion'],
     conflicts: [],
-    blurb: '表面摩擦降到≈0，碰到斜的东西就一直加速',
+    blurb: '抓地不变，空气阻力降到 1/4：圆的东西滚得更远——长条和团块本来就没什么可滚的',
   },
   heavy: {
     id: 'heavy', name: '变重', chapter: 3,

@@ -18,6 +18,13 @@ export const LINES = {
   l1_win: { who: '农夫', text: '能踩。它没抱怨。' },
   l2_win: { who: '农夫', text: '它动了！它自己动的。' },
   l3_win: { who: '水泵', text: '出水了。三十年没这么顺。' },
+  // levels.md 附录 A「落地形状分岔台词」6 条**闭集**，表外不许自拟；同句整局最多 2 次，超额静默
+  form_beam: { who: '农夫', text: '这东西能踩吗？' },
+  form_wheel: { who: '农夫', text: '圆的。它会自己跑。' },
+  form_blob: { who: '农夫', text: '你是不是想让我踩这个？' },
+  form_pile: { who: '农夫', text: '你画了三个。我只有一双脚。' },
+  form_container: { who: '农夫', text: '这玩意儿能装东西？' },
+  form_grain: { who: '农夫', text: '这么小？吹口气就没了。' },
   // 9.2 表：连续失败 2 次（通用）
   common_fail2: { who: '农夫', text: '不急。我等你。真的。' },
   // 9.2 表：章节盖章（第 1 章）

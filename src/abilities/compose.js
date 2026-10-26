@@ -16,6 +16,10 @@ import { lookupCombos } from './combos.js';
 
 export const ABILITY_LAYER_ORDER = ['material', 'motion', 'sense', 'meta'];
 
+/** 乘算键：同键多处出现时相乘而不是覆盖（R3 可交换） */
+const MUL_KEYS = ['densityMul', 'frictionAirMul'];
+const isMul = (key) => MUL_KEYS.indexOf(key) >= 0;
+
 export function composeAbilities(ids) {
   const picked = [];
   const unknown = [];
@@ -41,8 +45,8 @@ export function composeAbilities(ids) {
   for (const ab of sorted) {
     for (const key of Object.keys(ab.mods || {})) {
       const val = ab.mods[key];
-      if (key === 'densityMul') {
-        mods.densityMul = (mods.densityMul == null ? 1 : mods.densityMul) * val;  // R3
+      if (isMul(key)) {
+        mods[key] = (mods[key] == null ? 1 : mods[key]) * val;  // R3
       } else {
         if (owner[key] && owner[key] !== ab.id) {
           notes.push({ type: 'override', key, from: owner[key], to: ab.id });
@@ -63,12 +67,13 @@ export function composeAbilities(ids) {
   const combos = lookupCombos(picked.map((a) => a.id));
   for (const c of combos) {
     for (const key of Object.keys(c.bonus || {})) {
-      if (key === 'densityMul') mods.densityMul = (mods.densityMul == null ? 1 : mods.densityMul) * c.bonus[key];
+      if (isMul(key)) mods[key] = (mods[key] == null ? 1 : mods[key]) * c.bonus[key];
       else mods[key] = c.bonus[key];
     }
   }
 
   if (mods.densityMul == null) mods.densityMul = 1;
+  if (mods.frictionAirMul == null) mods.frictionAirMul = 1;
 
   return {
     ids: picked.map((a) => a.id),
