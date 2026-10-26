@@ -2847,6 +2847,178 @@ function createLevelRuntime(opts) {
   };
 }
 ;
+/* src/audio/voice-scheduler.js */
+/**
+ * src/audio/voice-scheduler.js —— 语音排队与配额（`audio-spec-v2` 附录 **C.1 / C.1b / C.2**）
+ *
+ * 这个文件是**纯逻辑**：不碰 `speechSynthesis`、不碰 `AudioContext`、不读时钟（时钟注入）。
+ * 只有这样，C.1 那张"五步优先序"才能被单测逐条数出来——否则它只能靠读代码相信。
+ *
+ * ── C.1 五步（顺序写死，不许实现方自行调换）────────────────────────────────
+ *   ① C5 说话人不在画面内 → **挂起**（不扣、不丢），等 `onScreen` 变 true
+ *   ② 配额预检（**只读**）→ 不够就**不出队**，连 C4 的延后都别做
+ *   ③ C4 同音色 45s 间隔 → 未到就延后（不扣）
+ *   ④ 超时整句丢弃 → 丢弃（不扣）
+ *   ⑤ `utterance.onstart` → **扣 1 次；这是全程唯一允许扣费的地方**
+ *
+ * 为什么不能只在 ⑤ 检查额度：会出现"C4 已延后 30 秒 → 到点发现额度没了 → 丢弃"，
+ * 玩家白等 30 秒，这次延后完全是白做的。所以 ② 只读预检必须在入队前。
+ *
+ * ── C.1b 「抢占」与「终止」是两个动作 ─────────────────────────────────────
+ *   · `dropPending()`   只从**队列**里摘掉：**不扣费**，是优先手段；
+ *   · `abortSpeaking()` 对**已起播**的句子 cancel：**已扣不退**，只在语义过期时用。
+ *   合成一个 `cancel()` 会撞上场景边界（切关时上一关还在念 = 音画脱钩，会被当 bug 报）。
+ *
+ * ── C.2 两套额度不要混 ──────────────────────────────────────────────────────
+ *   本文件的 `budget` 是**语音额度**（整局 ≤30 条 / ≤75 s）；
+ *   主程序的 `sayCapped` 是**文字出现次数**。
+ *   两者共用 → 文字把语音额度吃光 → 症状是"字幕全出来了，却一句都没念"，
+ *   而排查看起来像语音坏了（会先去查 getVoices），方向全错。
+ */
+
+const VOICE_SPEAKER_INTERVAL_MS = 45000;   // C4 同音色强制间隔 [待实机标定]
+const VOICE_PENDING_TTL_MS = 45000;         // 挂起/延后的兜底上限（过窗判据优先用事件）[待实机标定]
+const VOICE_BUDGET_LINES = 30;              // 整局语音条数上限 [待实机标定]
+const VOICE_BUDGET_MS = 75000;              // 整局语音时长上限 [待实机标定]
+
+/**
+ * C.1b 级别：由**时机**决定，不由文案内容决定（否则会冒出"这句写得重要所以不给抢"）
+ * 数字越小优先级越高；≥INTRO 的可被抢占，SUCCESS/SCOPED 不可抢占。
+ */
+const LINE_LEVEL = {
+  SUCCESS: 1,        // 首次成功 / 章节盖章 / 终局
+  SCOPED: 2,         // 受逐句稀缺额度约束的句子（common_fail2、各关失败暗示）
+  INTRO: 3,          // 关卡开场
+  AMBIENT: 4,        // 隐藏解法 / 环境吐槽
+};
+const canPreempt = (lv) => lv >= LINE_LEVEL.INTRO;
+
+/**
+ * @param {object} o
+ * @param {{speak:(u:object)=>void, cancel:()=>void}} o.backend  语音后端（audio-bus 注入）
+ * @param {()=>number} o.now                                    时钟（ms）
+ * @param {(speaker:string)=>boolean} [o.isOnScreen]             C5 前置条件，由主程序提供
+ * @param {(lineId:string)=>boolean} [o.precheckQuota]           **只读**文字额度预检（C.1 第 2 步）
+ * @param {(lineId:string)=>void} [o.onSpoken]                   真正起播后的回调（诊断/打点）
+ * @param {(lineId:string, reason:string)=>void} [o.onAbort]      终止回调（诊断/打点）
+ */
+function createVoiceScheduler(o) {
+  const backend = o.backend;
+  const now = o.now || (() => Date.now());
+  const isOnScreen = o.isOnScreen || (() => true);
+  const precheckQuota = o.precheckQuota || (() => true);
+
+  let playing = null;              // { lineId, speaker, level, startedAt }
+  let pending = null;              // { lineId, speaker, level, textMs, enqueuedAt, notBefore, suspended }
+  const lastStartAt = new Map();   // speaker → 上次真正起播的时间（C4 用）
+  const budget = { lines: 0, ms: 0 };
+
+  function start(entry) {
+    playing = { lineId: entry.lineId, speaker: entry.speaker, level: entry.level, startedAt: now() };
+    const mine = playing;
+    backend.speak({
+      lineId: entry.lineId,
+      text: entry.text,
+      speaker: entry.speaker,
+      // ⑤ 全程唯一允许扣费的地方
+      onStart: () => {
+        budget.lines += 1;
+        budget.ms += Math.max(0, entry.textMs || 0);
+        lastStartAt.set(entry.speaker, now());
+        if (o.onSpoken) o.onSpoken(entry.lineId);
+      },
+      onEnd: () => { if (playing === mine) playing = null; },
+      onError: () => { if (playing === mine) playing = null; },
+    });
+  }
+
+  /** 推进一步：① C5 → ② 只读预检 → ③ C4 → ④ 超时 → ⑤ 起播 */
+  function pump() {
+    if (playing || !pending) return;
+    const t = now();
+    // ① C5：不在画面内 → 挂起（不扣、不丢）；过窗才作废，作废也不扣
+    if (!isOnScreen(pending.speaker)) {
+      pending.suspended = true;
+      if (t - pending.enqueuedAt > VOICE_PENDING_TTL_MS) pending = null;
+      return;
+    }
+    pending.suspended = false;
+    // ② 配额只读预检：不够就直接不出队（连 C4 的延后都别做）
+    if (!precheckQuota(pending.lineId)) { pending = null; return; }
+    // ③ C4 同音色间隔：延后，不扣
+    const last = lastStartAt.get(pending.speaker);
+    const notBefore = Math.max(pending.notBefore || 0,
+      last == null ? 0 : last + VOICE_SPEAKER_INTERVAL_MS);
+    if (t < notBefore) { pending.notBefore = notBefore; return; }
+    // ④ 超时整句丢弃：不扣。
+    // 计时从"**它本来可以起播**"那一刻算起，不是从入队算起 —— 否则 TTL 与 C4 同为 45s 时，
+    // 被 C4 延后的句子会在刚够格的同一刻被判超时，C4 永远不可能成功。
+    const eligibleAt = Math.max(pending.enqueuedAt, pending.notBefore || 0);
+    if (t - eligibleAt > VOICE_PENDING_TTL_MS) { pending = null; return; }
+    // ⑤ 起播
+    const entry = pending;
+    pending = null;
+    start(entry);
+  }
+
+  const api = {
+    /**
+     * 请求播一句。返回 'speaking' | 'queued' | 'rejected'。
+     * **这里不扣费**——扣费只发生在 backend 的 onStart 回调里。
+     */
+    request({ lineId, text, speaker, level, textMs }) {
+      const lv = level || LINE_LEVEL.AMBIENT;
+      const make = () => ({ lineId, text, speaker, level: lv, textMs, enqueuedAt: now(), notBefore: 0, suspended: false });
+      if (!pending) { pending = make(); pump(); return playing && playing.lineId === lineId ? 'speaking' : 'queued'; }
+      // 队满：抢占**尚未起播的最低级别**（不扣费）
+      if (!canPreempt(lv)) return 'rejected';            // 不可抢占的句子不许挤掉别人
+      if (!canPreempt(pending.level)) return 'rejected'; // 正在等的不可抢占 → 只能拒新的
+      // 同级别不换（先到先等，避免同级来回颠簸）；只有"新的更重要"才抢占等待位
+      if (pending.level > lv) { pending = make(); pump(); return playing && playing.lineId === lineId ? 'speaking' : 'queued'; }
+      return 'rejected';                                 // 新的不比在等的更重要 → 拒
+    },
+
+    /** C.1b 抢占：只摘队列里尚未起播的，**不扣费** */
+    dropPending(lineId) {
+      if (pending && (!lineId || pending.lineId === lineId)) { pending = null; return true; }
+      return false;
+    },
+
+    /** C.1b 终止：已起播的句子停掉，**已扣不退**。只用于语义过期（切关 / 说话人离场 / 事件已过去） */
+    abortSpeaking(reason) {
+      if (!playing) return false;
+      const was = playing;
+      playing = null;
+      backend.cancel();                    // 全仓库唯一允许 cancel 的地方
+      if (o.onAbort) o.onAbort(was.lineId, reason);
+      return true;
+    },
+
+    /** 场景边界：切关 / 说话人离场 / 事件已过去 → 先抢占再终止（额度不退） */
+    onSceneBoundary(reason) {
+      api.dropPending();
+      return api.abortSpeaking(reason);
+    },
+
+    /** 由主循环或事件驱动：推进挂起与延后 */
+    tick() { pump(); },
+
+    /** 只读快照（给 HUD / 单测看，不许在这里改状态） */
+    get state() {
+      return {
+        playing: playing ? { ...playing } : null,
+        pending: pending ? { ...pending } : null,
+        budget: {
+          lines: budget.lines, ms: budget.ms,
+          linesLeft: Math.max(0, VOICE_BUDGET_LINES - budget.lines),
+          msLeft: Math.max(0, VOICE_BUDGET_MS - budget.ms),
+        },
+      };
+    },
+  };
+  return api;
+}
+;
 /* src/audio/audio-bus.js */
 /**
  * src/audio/audio-bus.js —— 音频模块**单例**（全仓库唯一允许 new AudioContext 的文件）
@@ -2870,6 +3042,8 @@ function createLevelRuntime(opts) {
  *
  * 本文件不 import 物理层：依赖方向是 audio → physics（订阅一次 onImpact 由 main.js 完成）。
  */
+
+
 
 const AUDIO_MAX_SFX = 8;
 const AUDIO_NODE_BUDGET = 40;
@@ -2919,6 +3093,34 @@ function createAudioBus() {
   let nodeCount = 0;
   const queue = [];             // 未解锁前的 pendown/spawn 排队
   const voiceState = { available: null, mode: 'unknown', unlockedVoice: false };
+
+  /**
+   * 语音调度（C.1 / C.1b / C.2）。真 backend 只在这里出现：
+   * `onstart` 回调是**全程唯一扣语音额度的地方**（C.1 第 ⑤ 步）。
+   * `isOnScreen` / `precheckQuota` 由主程序注入——音频层不认识关卡，也不该认识。
+   */
+  const voiceHooks = { isOnScreen: null, precheckQuota: null };
+  const voiceBackend = {
+    speak(req) {
+      try {
+        const u = new SpeechSynthesisUtterance(req.text || req.lineId);
+        u.lang = voiceState.voiceLang || 'zh-CN';
+        u.volume = 1;
+        u.rate = 0.98;
+        u.onstart = () => { if (req.onStart) req.onStart(); };
+        u.onend = () => { if (req.onEnd) req.onEnd(); };
+        u.onerror = () => { if (req.onError) req.onError(); };
+        speechSynthesis.speak(u);
+      } catch (e) { if (req.onError) req.onError(); }
+    },
+    cancel() { try { speechSynthesis.cancel(); } catch (e) { /* 忽略 */ } },
+  };
+  const voiceScheduler = createVoiceScheduler({
+    backend: voiceBackend,
+    now: audioNow,
+    isOnScreen: (sp) => (voiceHooks.isOnScreen ? voiceHooks.isOnScreen(sp) : true),
+    precheckQuota: (id) => (voiceHooks.precheckQuota ? voiceHooks.precheckQuota(id) : true),
+  });
 
   // ---- 语音可用性判据：存在 zh-* 才算可用（只有 en-US 时必须走气泡）----
   function probeVoices() {
@@ -3101,24 +3303,49 @@ function createAudioBus() {
       return playRecipe(sfxId, opts);
     },
 
-    /** 契约：speak(lineId)。zh-* 不可用 / 绘制中 / 未解锁 都不出声。 */
-    speak(lineId, text) {
+    /**
+     * 契约：speak(lineId, text, opts)。
+     * opts = { speaker?, level?, textMs?, onScreen?, precheck? }
+     *   · speaker   用于 C4 同音色 45s 间隔
+     *   · level     C.1b 级别（1 成功/盖章 2 受额度约束 3 开场 4 环境）
+     *   · onScreen  C5 前置条件，**由主程序提供**（不在画面内 → 挂起而不是丢弃）
+     *   · precheck  C.1 第 2 步的**只读**文字额度预检
+     *
+     * 出声与否由 voiceScheduler 按 C.1 的五步决定；这里只负责"把真 backend 接上去"。
+     * 返回值：true = 已起播（或已入队），false = 通道不可用/被拒（上层照常给气泡）。
+     */
+    speak(lineId, text, opts) {
+      const o2 = opts || {};
       if (!lineId && !text) return false;
       if (drawing) return false;                       // 绘制期间任何语音都不许起播（硬规则）
       if (!unlocked) return false;                     // 不进队列：延迟台词比不播更糟
       if (voiceState.available == null) probeVoices();
       if (!voiceState.available) return false;         // 无中文语音 → 上层走气泡，绝不用英文念中文
       if (typeof speechSynthesis === 'undefined') return false;
-      try {
-        const u = new SpeechSynthesisUtterance(text || lineId);
-        u.lang = voiceState.voiceLang || 'zh-CN';
-        u.volume = 1;
-        u.rate = 0.98;
-        speechSynthesis.speak(u);
-        return true;
-      } catch (e) {
-        return false;
-      }
+      const res = voiceScheduler.request({
+        lineId: lineId || text,
+        text: text || lineId,
+        speaker: o2.speaker || 'narrator',
+        level: o2.level == null ? LINE_LEVEL.AMBIENT : o2.level,
+        textMs: o2.textMs,
+      });
+      return res !== 'rejected';
+    },
+
+    /** C.1b 抢占（尚未起播）：不扣额度 */
+    dropPendingLine(lineId) { return voiceScheduler.dropPending(lineId); },
+    /** C.1b 终止（已起播）：额度不退；只在语义过期时用 */
+    abortSpeaking(reason) { return voiceScheduler.abortSpeaking(reason); },
+    /** 场景边界（切关 / 说话人离场）：先抢占再终止 */
+    onSceneBoundary(reason) { return voiceScheduler.onSceneBoundary(reason); },
+    /** 主循环推进挂起/延后（每帧调一次即可，内部幂等） */
+    tickVoice() { voiceScheduler.tick(); },
+    /** 只读：语音额度与队列快照（诊断 / 单测） */
+    get voiceStateSnapshot() { return voiceScheduler.state; },
+    /** 主程序注入 C5 前置条件与 C.1 第 2 步的只读预检（音频层不认识关卡） */
+    setVoiceHooks(h) {
+      if (h && typeof h.isOnScreen === 'function') voiceHooks.isOnScreen = h.isOnScreen;
+      if (h && typeof h.precheckQuota === 'function') voiceHooks.precheckQuota = h.precheckQuota;
     },
 
     /** 契约：总开关。用 suspend/resume，保图，不重建。 */
@@ -3245,6 +3472,21 @@ function createLineQuota(max = 2) {
 const PER_LEVEL_LINE_IDS = ['common_fail2'];
 function isPerLevelLine(id) {
   return PER_LEVEL_LINE_IDS.indexOf(id) >= 0;
+}
+
+/**
+ * 台词的 **C.1b 级别**：由**时机**决定，不由文案内容决定。
+ * 1 首次成功 / 章节盖章 / 终局　2 受逐句稀缺额度约束（兜底句、各关失败暗示）
+ * 3 关卡开场　4 隐藏解法 / 环境吐槽
+ * 为什么按 id 前缀推而不是逐句手标：同一时机下不同措辞硬软不同，
+ * 逐句标会冒出"这句写得比较重要所以不给抢"这种无法执行的主观判断，且两份文档会各自漂移。
+ */
+function lineVoiceLevel(id) {
+  if (id == null) return 4;
+  if (/^(form_|common_fail|l\d_fail)/.test(id)) return 2;
+  if (/_win$/.test(id) || /^stamp/.test(id)) return 1;
+  if (/_intro$/.test(id)) return 3;
+  return 4;
 }
 
 /** 台词文本；未知 id 返回 null（调用方决定不显示） */
@@ -3569,8 +3811,14 @@ function boot() {
     if (!text) return false;
     view.bubble = { who: lineWho(lineId), text, until: mainNow() + (ms || 2600) };
     lastBubbleKey = lineId;
-    // 有中文语音才出声；没有就静默走气泡（绝不拿英文嗓音念中文）
-    AudioBus.speak(lineId, text);
+    // 有中文语音才出声；没有就静默走气泡（绝不拿英文嗓音念中文）。
+    // 语音怎么排队（C5 挂起 / C4 延后 / 超时丢弃）由 AudioBus 内的 voice-scheduler 决定，
+    // 这里只把"说话人、级别、朗读时长"三个事实交给它——扣额度发生在它那边 onstart。
+    AudioBus.speak(lineId, text, {
+      speaker: lineWho(lineId) || 'narrator',
+      level: lineVoiceLevel(lineId),
+      textMs: estimateSpeechMs(text),
+    });
     if (AudioBus.voiceMode === 'bubble') bus.emit('text:bubble', { lineId });
     return true;
   }
@@ -3610,6 +3858,24 @@ function boot() {
   }
   /** 落地形状分岔台词：闭集、同句 ≤2 次（整局）、超额静默 */
   function sayFormLine(form) { sayCapped('form_' + form, 2200); }
+
+  // 把两个"只有主程序知道"的事实注入音频层（音频层不认识关卡，也不该认识）：
+  //   · C5 前置条件：说话人在不在画面内；· C.1 第 2 步：文字额度的**只读**预检。
+  // 注意 isOnScreen 目前恒为 true —— 关卡还没有镜头推拉；等有相机可视区再改这里，
+  // 这是整个 C.5 唯一需要动主程序的地方，别在音频层里去猜。
+  AudioBus.setVoiceHooks({
+    isOnScreen: (speaker) => {
+      const lv = view.level;
+      if (!lv) return true;
+      const labels = (lv.actors || []).map((a) => a.label);
+      if (labels.indexOf(speaker) >= 0) return true;
+      return true;   // [待设计] 章印 / 水泵这类非 actor 说话人目前也都在画面内
+    },
+    precheckQuota: (lineId) => {
+      const quota = isPerLevelLine(lineId) ? allowLevelLine : allowRunLine;
+      return !quota.exhausted(lineId);   // 只读：不扣
+    },
+  });
   /** 终态台词：与形态台词共用整局档，跨关兜底句自动落到每关档 */
   function sayFailLine(id) { sayCapped(id, 2600); }
 
@@ -3628,6 +3894,9 @@ function boot() {
     // 进关重置"每关"档配额：跨关兜底句（common_fail2 一类）的额度不能被前一关吃光，
     // 否则关3..关9 的"没预料到的终态"只剩余光和静默，等于把安全网关掉了。
     allowLevelLine.reset();
+    // C.1b 场景边界：切关时**已起播**的句子必须停（额度不退），否则玩家已站在新关卡、
+    // 耳朵里还在念上一关 = 音画脱钩，会被当 bug 报。抢占未起播的那条不扣费。
+    AudioBus.onSceneBoundary('level-change');
     sceneSeed = 7 + view.levelIndex * 31;
     staticLayer.invalidate();
     view.win = false;
@@ -4072,6 +4341,7 @@ function boot() {
     view.fps = view.fps * 0.9 + (1000 / Math.max(1, dt)) * 0.1;
     PerfGovernor.sample(dt, physMs);
     if (view.failFlash > 0) view.failFlash = Math.max(0, view.failFlash - dt / 600);
+    AudioBus.tickVoice();   // C.5 挂起 / C.4 延后的推进（幂等）
     if (runtime) view.snapshot = runtime.snapshot();
     if (view.impactDebugOn && world) view.impactDebug = world.impactDebug;
 

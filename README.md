@@ -21,6 +21,7 @@ node tools/build.mjs                 # 生成 dist/game.html + 根目录 index.h
   node tests/probe2.mjs             # 摩擦矩阵探针（关2 设计的依据，见第五节）
   node tests/roll.test.mjs          # `会滚`（D16）11 条断言 + friction=0 反证
   node tests/roll-calib.mjs         # `会滚` 口径标定：median/p90 + negative control（8° 台架）
+  node --test tests/voice-scheduler.test.mjs  # 语音排队/配额 10 条（C.1 五步 / C.1b 抢占与终止 / C.2 两套额度）
   node tests/l2-acceptance.mjs      # 关2 判据 1a/1b/1c/2/3/4/5（1a/7 已作废，仍报数留证）
   node tests/l2-passable.mjs        # 关2 到底能不能过：3 个落位 × 5 种造物 × 5 个落点
   node tests/probe-l2-endstates.mjs # 四个终态**真实可达性**（哪句台词在玩法里是死的）
@@ -39,7 +40,7 @@ node tools/build.mjs                 # 生成 dist/game.html + 根目录 index.h
 
 | 文件 | 说明 |
 |---|---|
-| `dist/game.html` | 单文件游戏（293,436 B / 上限 600,000 B），4 个 MIT 库 + app + 许可正文全部内联 |
+| `dist/game.html` | 单文件游戏（308,266 B / 上限 600,000 B），4 个 MIT 库 + app + 许可正文全部内联 |
 | `index.html` | 同一份产物（构建通过断言后才复制，失败则不生成） |
 | `dist/smoke-l1..l3.png` | 430×932 竖屏实机截图（三关各一张） |
 | `vendor/` | curl 自 unpkg 落盘的 4 个库 + 4 份许可 + 聚合 `LICENSES.txt` |
@@ -171,6 +172,37 @@ L3 团块+变重 → 过关（1.8s, form=wheel）
   - 8° 斜面 3 秒：裸圆 65px/1.5 rad → 会滚 **100px/2.9 rad（×1.55）**
   - 长条贴会滚：9px → 10px（**差 11%**）= 形状不对就基本没意义
   - 被否决的 `friction=0` 留证：平地滑 292px 但只转 0.08 rad（真滚应转 11.2 rad）= 雪橇，不是滚
+
+## 五之三、语音排队与配额（`audio-spec-v2` C.1 / C.1b / C.2）
+
+语音的排队/配额抽成**纯逻辑** `src/audio/voice-scheduler.js`（不碰 `speechSynthesis`、时钟注入），
+这样"五步优先序"才能被单测逐条数出来——否则只能靠读代码相信。
+
+**C.1 五步（顺序写死）**：① C5 说话人不在画面内 → **挂起**（不扣、不丢）→ ② 配额**只读**预检（不够就出队，
+连 C4 延后都不做）→ ③ C4 同音色 45s → 延后 → ④ 超时丢弃 → ⑤ `onstart` **扣 1 次（全程唯一扣费点）**。
+> 为什么不能只在 ⑤ 查额度：会出现"C4 已延后 30 秒 → 到点发现额度没了 → 丢弃"，玩家白等。
+
+**C.1b 抢占 ≠ 终止**：`dropPending()` 只摘尚未起播的（**不扣费**）；`abortSpeaking()` 停已起播的（**已扣不退**，
+否则能刷额度）。切关/说话人离场/事件已过去必须终止——否则玩家已在新关卡、耳朵里还在念上一关，音画脱钩会被当 bug 报。
+队列上限 1 在播 + 1 等待；队满时丢"尚未起播的最低级别"，**同级别不换**（先到先等，避免同级颠簸）。
+
+**C.2 两套额度不许混**：`sayCapped` 是**文字出现次数**（整局 2 / 每关 2），`voice-scheduler.budget` 是**语音额度**
+（整局 ≤30 条 / ≤75 s）。混用会"文字把语音额度吃光"，症状是**字幕全出来了却一句都没念**——看起来像语音坏了，
+排查会先去查 `getVoices()`，方向全错。
+
+**实测自检（`node --test tests/voice-scheduler.test.mjs`，10/10）**
+- 没起播不扣；C5 挂起期间不扣、入画后只扣 1 次；C4 延后 44 秒不扣、到点只扣 1 次；
+- 已起播被打断：额度不回滚；抢占未起播：一次都不扣；
+- 队满只丢"尚未起播的最低级别"，受额度约束的等待句不许被抢；
+- 20 次纯文字台词后语音额度仍是满的（30/30）；
+- 全仓库 `speechSynthesis.cancel(` **只有 1 处**（audio-bus 的 `voiceBackend.cancel`），由断言守住；
+- 台词级别按**时机**推（`lineVoiceLevel`），不逐句手标——避免"这句写得重要所以不给抢"这种主观判断。
+
+**一处实现取舍**：TTL 从"它本来可以起播"那一刻算起，不是从入队算起。否则 TTL 与 C4 同为 45s 时，
+被 C4 延后的句子会在刚够格的同一刻被判超时，C4 永远不可能成功——这个 bug 是单测里真撞出来的。
+
+**未完成**：`isOnScreen` 目前恒为 `true`（关卡还没有镜头推拉），C5 因此不会被真实触发；
+等有相机可视区再改 `main.js` 里那一个函数即可（C.5 唯一需要动主程序的地方）。
 
 ## 六、没做完 / 明确是占位
 

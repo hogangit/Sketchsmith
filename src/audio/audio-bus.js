@@ -21,6 +21,8 @@
  * 本文件不 import 物理层：依赖方向是 audio → physics（订阅一次 onImpact 由 main.js 完成）。
  */
 
+import { createVoiceScheduler, LINE_LEVEL } from './voice-scheduler.js';
+
 const AUDIO_MAX_SFX = 8;
 const AUDIO_NODE_BUDGET = 40;
 const AUDIO_QUEUE_MAX = 3;
@@ -69,6 +71,34 @@ export function createAudioBus() {
   let nodeCount = 0;
   const queue = [];             // 未解锁前的 pendown/spawn 排队
   const voiceState = { available: null, mode: 'unknown', unlockedVoice: false };
+
+  /**
+   * 语音调度（C.1 / C.1b / C.2）。真 backend 只在这里出现：
+   * `onstart` 回调是**全程唯一扣语音额度的地方**（C.1 第 ⑤ 步）。
+   * `isOnScreen` / `precheckQuota` 由主程序注入——音频层不认识关卡，也不该认识。
+   */
+  const voiceHooks = { isOnScreen: null, precheckQuota: null };
+  const voiceBackend = {
+    speak(req) {
+      try {
+        const u = new SpeechSynthesisUtterance(req.text || req.lineId);
+        u.lang = voiceState.voiceLang || 'zh-CN';
+        u.volume = 1;
+        u.rate = 0.98;
+        u.onstart = () => { if (req.onStart) req.onStart(); };
+        u.onend = () => { if (req.onEnd) req.onEnd(); };
+        u.onerror = () => { if (req.onError) req.onError(); };
+        speechSynthesis.speak(u);
+      } catch (e) { if (req.onError) req.onError(); }
+    },
+    cancel() { try { speechSynthesis.cancel(); } catch (e) { /* 忽略 */ } },
+  };
+  const voiceScheduler = createVoiceScheduler({
+    backend: voiceBackend,
+    now: audioNow,
+    isOnScreen: (sp) => (voiceHooks.isOnScreen ? voiceHooks.isOnScreen(sp) : true),
+    precheckQuota: (id) => (voiceHooks.precheckQuota ? voiceHooks.precheckQuota(id) : true),
+  });
 
   // ---- 语音可用性判据：存在 zh-* 才算可用（只有 en-US 时必须走气泡）----
   function probeVoices() {
@@ -251,24 +281,49 @@ export function createAudioBus() {
       return playRecipe(sfxId, opts);
     },
 
-    /** 契约：speak(lineId)。zh-* 不可用 / 绘制中 / 未解锁 都不出声。 */
-    speak(lineId, text) {
+    /**
+     * 契约：speak(lineId, text, opts)。
+     * opts = { speaker?, level?, textMs?, onScreen?, precheck? }
+     *   · speaker   用于 C4 同音色 45s 间隔
+     *   · level     C.1b 级别（1 成功/盖章 2 受额度约束 3 开场 4 环境）
+     *   · onScreen  C5 前置条件，**由主程序提供**（不在画面内 → 挂起而不是丢弃）
+     *   · precheck  C.1 第 2 步的**只读**文字额度预检
+     *
+     * 出声与否由 voiceScheduler 按 C.1 的五步决定；这里只负责"把真 backend 接上去"。
+     * 返回值：true = 已起播（或已入队），false = 通道不可用/被拒（上层照常给气泡）。
+     */
+    speak(lineId, text, opts) {
+      const o2 = opts || {};
       if (!lineId && !text) return false;
       if (drawing) return false;                       // 绘制期间任何语音都不许起播（硬规则）
       if (!unlocked) return false;                     // 不进队列：延迟台词比不播更糟
       if (voiceState.available == null) probeVoices();
       if (!voiceState.available) return false;         // 无中文语音 → 上层走气泡，绝不用英文念中文
       if (typeof speechSynthesis === 'undefined') return false;
-      try {
-        const u = new SpeechSynthesisUtterance(text || lineId);
-        u.lang = voiceState.voiceLang || 'zh-CN';
-        u.volume = 1;
-        u.rate = 0.98;
-        speechSynthesis.speak(u);
-        return true;
-      } catch (e) {
-        return false;
-      }
+      const res = voiceScheduler.request({
+        lineId: lineId || text,
+        text: text || lineId,
+        speaker: o2.speaker || 'narrator',
+        level: o2.level == null ? LINE_LEVEL.AMBIENT : o2.level,
+        textMs: o2.textMs,
+      });
+      return res !== 'rejected';
+    },
+
+    /** C.1b 抢占（尚未起播）：不扣额度 */
+    dropPendingLine(lineId) { return voiceScheduler.dropPending(lineId); },
+    /** C.1b 终止（已起播）：额度不退；只在语义过期时用 */
+    abortSpeaking(reason) { return voiceScheduler.abortSpeaking(reason); },
+    /** 场景边界（切关 / 说话人离场）：先抢占再终止 */
+    onSceneBoundary(reason) { return voiceScheduler.onSceneBoundary(reason); },
+    /** 主循环推进挂起/延后（每帧调一次即可，内部幂等） */
+    tickVoice() { voiceScheduler.tick(); },
+    /** 只读：语音额度与队列快照（诊断 / 单测） */
+    get voiceStateSnapshot() { return voiceScheduler.state; },
+    /** 主程序注入 C5 前置条件与 C.1 第 2 步的只读预检（音频层不认识关卡） */
+    setVoiceHooks(h) {
+      if (h && typeof h.isOnScreen === 'function') voiceHooks.isOnScreen = h.isOnScreen;
+      if (h && typeof h.precheckQuota === 'function') voiceHooks.precheckQuota = h.precheckQuota;
     },
 
     /** 契约：总开关。用 suspend/resume，保图，不重建。 */

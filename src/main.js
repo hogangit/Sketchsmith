@@ -20,7 +20,7 @@ import { BodyBudget, StrokeBudget } from './physics/budget.js';
 import { createLevelRuntime } from './level/runtime.js';
 import { getAbility, IMPLEMENTED_ABILITY_IDS } from './abilities/registry.js';
 import { AudioBus } from './audio/audio-bus.js';
-import { canFitBeforeStamp, createLineQuota, estimateSpeechMs, isPerLevelLine, LINES, lineText, lineWho } from './text/lines.js';
+import { canFitBeforeStamp, createLineQuota, estimateSpeechMs, isPerLevelLine, LINES, lineText, lineVoiceLevel, lineWho } from './text/lines.js';
 import { LEVEL_CH1_01 } from './level/levels/ch1-01.js';
 import { LEVEL_CH1_02 } from './level/levels/ch1-02.js';
 import { LEVEL_CH1_03 } from './level/levels/ch1-03.js';
@@ -92,8 +92,14 @@ export function boot() {
     if (!text) return false;
     view.bubble = { who: lineWho(lineId), text, until: mainNow() + (ms || 2600) };
     lastBubbleKey = lineId;
-    // 有中文语音才出声；没有就静默走气泡（绝不拿英文嗓音念中文）
-    AudioBus.speak(lineId, text);
+    // 有中文语音才出声；没有就静默走气泡（绝不拿英文嗓音念中文）。
+    // 语音怎么排队（C5 挂起 / C4 延后 / 超时丢弃）由 AudioBus 内的 voice-scheduler 决定，
+    // 这里只把"说话人、级别、朗读时长"三个事实交给它——扣额度发生在它那边 onstart。
+    AudioBus.speak(lineId, text, {
+      speaker: lineWho(lineId) || 'narrator',
+      level: lineVoiceLevel(lineId),
+      textMs: estimateSpeechMs(text),
+    });
     if (AudioBus.voiceMode === 'bubble') bus.emit('text:bubble', { lineId });
     return true;
   }
@@ -133,6 +139,24 @@ export function boot() {
   }
   /** 落地形状分岔台词：闭集、同句 ≤2 次（整局）、超额静默 */
   function sayFormLine(form) { sayCapped('form_' + form, 2200); }
+
+  // 把两个"只有主程序知道"的事实注入音频层（音频层不认识关卡，也不该认识）：
+  //   · C5 前置条件：说话人在不在画面内；· C.1 第 2 步：文字额度的**只读**预检。
+  // 注意 isOnScreen 目前恒为 true —— 关卡还没有镜头推拉；等有相机可视区再改这里，
+  // 这是整个 C.5 唯一需要动主程序的地方，别在音频层里去猜。
+  AudioBus.setVoiceHooks({
+    isOnScreen: (speaker) => {
+      const lv = view.level;
+      if (!lv) return true;
+      const labels = (lv.actors || []).map((a) => a.label);
+      if (labels.indexOf(speaker) >= 0) return true;
+      return true;   // [待设计] 章印 / 水泵这类非 actor 说话人目前也都在画面内
+    },
+    precheckQuota: (lineId) => {
+      const quota = isPerLevelLine(lineId) ? allowLevelLine : allowRunLine;
+      return !quota.exhausted(lineId);   // 只读：不扣
+    },
+  });
   /** 终态台词：与形态台词共用整局档，跨关兜底句自动落到每关档 */
   function sayFailLine(id) { sayCapped(id, 2600); }
 
@@ -151,6 +175,9 @@ export function boot() {
     // 进关重置"每关"档配额：跨关兜底句（common_fail2 一类）的额度不能被前一关吃光，
     // 否则关3..关9 的"没预料到的终态"只剩余光和静默，等于把安全网关掉了。
     allowLevelLine.reset();
+    // C.1b 场景边界：切关时**已起播**的句子必须停（额度不退），否则玩家已站在新关卡、
+    // 耳朵里还在念上一关 = 音画脱钩，会被当 bug 报。抢占未起播的那条不扣费。
+    AudioBus.onSceneBoundary('level-change');
     sceneSeed = 7 + view.levelIndex * 31;
     staticLayer.invalidate();
     view.win = false;
@@ -595,6 +622,7 @@ export function boot() {
     view.fps = view.fps * 0.9 + (1000 / Math.max(1, dt)) * 0.1;
     PerfGovernor.sample(dt, physMs);
     if (view.failFlash > 0) view.failFlash = Math.max(0, view.failFlash - dt / 600);
+    AudioBus.tickVoice();   // C.5 挂起 / C.4 延后的推进（幂等）
     if (runtime) view.snapshot = runtime.snapshot();
     if (view.impactDebugOn && world) view.impactDebug = world.impactDebug;
 

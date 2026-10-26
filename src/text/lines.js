@@ -68,6 +68,21 @@ export function isPerLevelLine(id) {
   return PER_LEVEL_LINE_IDS.indexOf(id) >= 0;
 }
 
+/**
+ * 台词的 **C.1b 级别**：由**时机**决定，不由文案内容决定。
+ * 1 首次成功 / 章节盖章 / 终局　2 受逐句稀缺额度约束（兜底句、各关失败暗示）
+ * 3 关卡开场　4 隐藏解法 / 环境吐槽
+ * 为什么按 id 前缀推而不是逐句手标：同一时机下不同措辞硬软不同，
+ * 逐句标会冒出"这句写得比较重要所以不给抢"这种无法执行的主观判断，且两份文档会各自漂移。
+ */
+export function lineVoiceLevel(id) {
+  if (id == null) return 4;
+  if (/^(form_|common_fail|l\d_fail)/.test(id)) return 2;
+  if (/_win$/.test(id) || /^stamp/.test(id)) return 1;
+  if (/_intro$/.test(id)) return 3;
+  return 4;
+}
+
 /** 台词文本；未知 id 返回 null（调用方决定不显示） */
 export function lineText(id) {
   const l = LINES[id];
