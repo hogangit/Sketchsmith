@@ -11,7 +11,7 @@ import { Boot, PerfGovernor, RenderQuality } from './core/perf.js';
 import { SAVE_KEY_PROGRESS, SAVE_SCHEMA_VERSION, loadProgress, saveProgress } from './core/storage.js';
 import { createLocalStorageSaveStore } from './platform/local-storage-save-store.js';
 import { createCanvasSurface, createStaticLayer } from './render/canvas.js';
-import { drawFreehandStroke, drawPaper } from './render/handdrawn.js';
+import { drawFarmer, drawFreehandStroke, drawPaper } from './render/handdrawn.js';
 import { chipIndexAt, drawHud, headerButtonAt } from './render/hud.js';
 import { createStrokeCapture } from './stroke/capture.js';
 import { analyzeStrokeGroup } from './stroke/classify.js';
@@ -100,6 +100,17 @@ export function boot() {
     view.bubble = { who: '', text, until: mainNow() + (ms || 1800) };
   }
 
+  const formSaid = new Map();
+  /** 落地形状分岔台词：闭集、同句 ≤2 次、超额静默（绝不换同义句填空，换句会被读成“形状变了”） */
+  function sayFormLine(form) {
+    const id = 'form_' + form;
+    if (!lineText(id)) return;                 // 表外不发声、不臆造
+    const n = formSaid.get(id) || 0;
+    if (n >= 2) return;
+    formSaid.set(id, n + 1);
+    say(id, 2200);
+  }
+
   function currentLevel() { return GAME_LEVELS[view.levelIndex]; }
 
   function buildWorld() {
@@ -131,13 +142,12 @@ export function boot() {
       return;
     }
     StrokeBudget.push(analysis.pointCount);
-    if (runtime.state.activeCreature) {
-      // 一次只有一个造物（阶段2 的简化：新画覆盖旧画）
-      bus.emit('creature:replace', {});
-    }
+
     const c = runtime.spawnCreature({ form: analysis.form, geo: analysis, thickness: MAIN_THICKNESS });
     if (c) {
       AudioBus.play('spawn');
+      // levels.md 附录 A：落地形状分岔台词（6 条闭集），同句整局最多 2 次，超额静默不改写
+      sayFormLine(analysis.form);
       view.snapshot = runtime.snapshot();
     }
   }
@@ -288,18 +298,47 @@ export function boot() {
       ctx.strokeStyle = '#5b5344';
       ctx.lineWidth = 2;
       ctx.strokeRect(-t.w / 2, -t.h / 2, t.w, t.h);
+      // 土：表土暗带 + 斜向土纹，避免地面读成一块纯色板
+      if (!isIce) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(-t.w / 2, -t.h / 2, t.w, t.h);
+        ctx.clip();
+        ctx.fillStyle = 'rgba(120,104,74,0.30)';
+        ctx.fillRect(-t.w / 2, -t.h / 2, t.w, 9);
+        ctx.strokeStyle = 'rgba(110,96,70,0.26)';
+        ctx.lineWidth = 1;
+        for (let hx = -t.w / 2 - t.h; hx < t.w / 2; hx += 13) {
+          ctx.beginPath();
+          ctx.moveTo(hx, t.h / 2);
+          ctx.lineTo(hx + t.h, -t.h / 2);
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
       ctx.restore();
     }
-    // 沟的虚线
+    // 沟沿刻度：只在沟口上方留一小段（32px）+ 一个朝下的小三角。
+    // 原来是从 y=150 一路贯穿到沟底，把云和山都切开了，读起来像施工辅助线漏进成品。
+    // 信息（"梁要跨到这里"）保住，杂线去掉。
     for (const g of lv.guides || []) {
+      const rim = g.y == null ? 430 : g.y;
       ctx.save();
-      ctx.setLineDash([5, 6]);
-      ctx.strokeStyle = 'rgba(120,60,40,0.45)';
-      ctx.lineWidth = 1.4;
+      ctx.strokeStyle = 'rgba(120,60,40,0.55)';
+      ctx.lineWidth = 1.6;
+      ctx.setLineDash([4, 5]);
       ctx.beginPath();
-      ctx.moveTo(g.x, 150);
-      ctx.lineTo(g.x, WORLD_H - 8);
+      ctx.moveTo(g.x, rim - 40);
+      ctx.lineTo(g.x, rim - 4);
       ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      ctx.moveTo(g.x - 4.5, rim - 11);
+      ctx.lineTo(g.x, rim - 3);
+      ctx.lineTo(g.x + 4.5, rim - 11);
+      ctx.closePath();
+      ctx.fillStyle = 'rgba(120,60,40,0.6)';
+      ctx.fill();
       ctx.restore();
     }
     // 提示轮廓（只在第一次失败后出现）
@@ -332,8 +371,96 @@ export function boot() {
         ctx.strokeStyle = 'rgba(70,62,50,0.75)';
         ctx.lineWidth = 1.6;
         ctx.strokeRect(s.x - s.w / 2, s.y - s.h / 2, s.w, s.h);
+      } else if (s.kind === 'hills') {
+        // 远山剪影 + 一朵云 + 两只鸟：不让天空留成纯空（空的部分会被读成“画面没加载完”）
+        ctx.fillStyle = 'rgba(158,158,136,0.34)';
+        ctx.beginPath();
+        ctx.moveTo(-10, 300); ctx.lineTo(96, 214); ctx.lineTo(206, 300); ctx.closePath(); ctx.fill();
+        ctx.fillStyle = 'rgba(158,158,136,0.22)';
+        ctx.beginPath();
+        ctx.moveTo(140, 300); ctx.lineTo(262, 236); ctx.lineTo(400, 300); ctx.closePath(); ctx.fill();
+        ctx.fillStyle = 'rgba(255,255,255,0.55)';
+        ctx.beginPath();
+        ctx.ellipse(318, 186, 34, 13, 0, 0, Math.PI * 2);
+        ctx.ellipse(292, 190, 22, 10, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(90,84,70,0.55)';
+        ctx.lineWidth = 1.5;
+        const bird = (bx, by, r) => {
+          ctx.beginPath();
+          ctx.moveTo(bx - r * 2, by);
+          ctx.quadraticCurveTo(bx - r, by - r, bx, by);
+          ctx.quadraticCurveTo(bx + r, by - r, bx + r * 2, by);
+          ctx.stroke();
+        };
+        bird(104, 152, 4.5);
+        bird(146, 132, 3.6);
+        bird(372, 150, 3.2);
+      } else if (s.kind === 'chasm') {
+        // 又深又暗的沟：明确“下去就上不来”，并在沟壁上放几块碎石
+        const g = ctx.createLinearGradient(0, s.y, 0, s.y + (s.depth || 80));
+        g.addColorStop(0, 'rgba(52,44,38,0.86)');
+        g.addColorStop(0.55, 'rgba(28,24,21,0.95)');
+        g.addColorStop(1, 'rgba(12,10,9,1)');
+        ctx.fillStyle = g;
+        ctx.fillRect(s.x1, s.y, s.x2 - s.x1, s.depth || 80);
+        ctx.fillStyle = 'rgba(120,110,96,0.5)';
+        ctx.beginPath(); ctx.arc(s.x1 + 18, s.y + 62, 5, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.arc(s.x1 + 34, s.y + 74, 3.5, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.arc(s.x2 - 22, s.y + 58, 4.5, 0, Math.PI * 2); ctx.fill();
+        ctx.strokeStyle = 'rgba(60,52,44,0.9)';
+        ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(s.x1, s.y); ctx.lineTo(s.x1, s.y + (s.depth || 80)); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(s.x2, s.y); ctx.lineTo(s.x2, s.y + (s.depth || 80)); ctx.stroke();
+      } else if (s.kind === 'crops') {
+        // 作物：竖杆 + 三叉穗 + 一片叶；三笔就能认成"庄稼"
+        const n = s.n || 3;
+        for (let i = 0; i < n; i++) {
+          const cx = n === 1 ? s.x1 : s.x1 + (s.x2 - s.x1) * (i / (n - 1));
+          const hh = (s.h || 18) + (i % 2) * 4;
+          ctx.strokeStyle = 'rgba(96,86,62,0.9)';
+          ctx.lineWidth = 1.6;
+          ctx.beginPath(); ctx.moveTo(cx, s.y); ctx.lineTo(cx, s.y - hh); ctx.stroke();
+          ctx.beginPath();
+          ctx.moveTo(cx, s.y - hh + 3); ctx.lineTo(cx - 3.4, s.y - hh - 4);
+          ctx.moveTo(cx, s.y - hh + 3); ctx.lineTo(cx + 3.4, s.y - hh - 4);
+          ctx.moveTo(cx, s.y - hh * 0.55); ctx.lineTo(cx + 4.6, s.y - hh * 0.55 - 3.4);
+          ctx.stroke();
+        }
+      } else if (s.kind === 'ridge') {
+        // 矮土垄：一条微微拱起的土带
+        ctx.beginPath();
+        ctx.moveTo(s.x1, s.y + 1);
+        ctx.quadraticCurveTo((s.x1 + s.x2) / 2, s.y - (s.h || 8), s.x2, s.y + 1);
+        ctx.closePath();
+        ctx.fillStyle = 'rgba(140,118,82,0.55)';
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(84,74,58,0.65)';
+        ctx.lineWidth = 1.2;
+        ctx.stroke();
+      } else if (s.kind === 'sign') {
+        // 木牌：立柱 + 牌面 + 一个字
+        ctx.strokeStyle = 'rgba(84,74,58,0.9)';
+        ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(s.x, s.y); ctx.lineTo(s.x, s.y - 17); ctx.stroke();
+        ctx.fillStyle = '#ece0c4';
+        ctx.fillRect(s.x - 9, s.y - 31, 18, 14);
+        ctx.lineWidth = 1.3;
+        ctx.strokeRect(s.x - 9, s.y - 31, 18, 14);
+        ctx.fillStyle = '#4a4335';
+        ctx.font = '10px system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(s.text || '田', s.x, s.y - 20);
+        ctx.textAlign = 'left';
+      } else if (s.kind === 'fence') {
+        ctx.strokeStyle = 'rgba(84,74,60,0.75)';
+        ctx.lineWidth = 1.6;
+        for (let fx = s.x1; fx <= s.x2; fx += 12) {
+          ctx.beginPath(); ctx.moveTo(fx, s.y); ctx.lineTo(fx, s.y - 12); ctx.stroke();
+        }
+        ctx.beginPath(); ctx.moveTo(s.x1, s.y - 8); ctx.lineTo(s.x2, s.y - 8); ctx.stroke();
       } else if (s.kind === 'text') {
-        ctx.fillStyle = 'rgba(90,80,64,0.8)';
+        ctx.fillStyle = s.tone === 'light' ? 'rgba(242,234,216,0.8)' : 'rgba(90,80,64,0.8)';
         ctx.font = (s.size || 10) + 'px system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif';
         ctx.textAlign = s.align || 'left';
         ctx.fillText(s.text, s.x, s.y);
@@ -372,21 +499,17 @@ export function boot() {
         continue;
       }
       if (b.label === 'actor') {
-        ctx.beginPath();
-        ctx.arc(b.position.x, b.position.y, b.circleRadius || 14, 0, Math.PI * 2);
-        ctx.fillStyle = '#4a6f8c';
-        ctx.fill();
-        ctx.strokeStyle = '#2c4457';
-        ctx.lineWidth = 2;
-        ctx.stroke();
-        ctx.beginPath();
-        ctx.arc(b.position.x + 4, b.position.y - 4, 2, 0, Math.PI * 2);
-        ctx.fillStyle = '#f4efe2';
-        ctx.fill();
+        // 人形，不是一个圈：草帽+头+身+两臂+两腿（细节见 handdrawn.drawFarmer）
+        const vx = (b.velocity && b.velocity.x) || 0;
+        const face = vx < -0.2 ? -1 : 1;
+        b.plugin = b.plugin || {};
+        b.plugin.gait = (b.plugin.gait || 0) + Math.abs(vx) * 0.055;
+        drawFarmer(ctx, b.position.x, b.position.y, { phase: b.plugin.gait, face });
         continue;
       }
       // 造物（含 compound 的子 parts）
       const parts = b.parts && b.parts.length > 1 ? b.parts.slice(1) : [b];
+      ctx.globalAlpha = b.render && b.render.opacity != null ? b.render.opacity : 1;
       for (const part of parts) {
         if (!part.vertices || !part.vertices.length) continue;
         if (part.circleRadius) {
@@ -400,6 +523,7 @@ export function boot() {
         ctx.lineWidth = 2;
         ctx.stroke();
       }
+      ctx.globalAlpha = 1;
     }
   }
 

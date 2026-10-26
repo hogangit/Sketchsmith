@@ -95,26 +95,40 @@ export function drawHud(ctx, view) {
   ctx.fillText(view.audioOn ? '声' : '静', DESIGN_W - 34, 76);
 
   // ---- 失败提示（只在场景上沿，不压地形）----
+  // 提示项可以是字符串，也可以是 {beam, other}：**按玩家上一次造出来的形态分岔**。
+  // 关2 用这个：梁 → 「梁撑得住。南瓜我抬不动。」（否掉方向），其他形态 → 常规暗示。
+  // 【禁止话术·写死在这里】任何提示里不许出现「再试试」「再画长一点」「这次可能行」
+  //   —— 提示要否掉方向，不要否掉玩家的手法；后者会让他在错误方向上更努力。
   const hints = view.level.failHints || [];
   if (snap.hintLevel > 0 && hints.length) {
-    const t = hints[Math.min(hints.length - 1, snap.hintLevel - 1)];
+    const t = pickFailHint(hints, snap.hintLevel, snap.creature && snap.creature.form);
     ctx.fillStyle = 'rgba(120,40,32,0.92)';
     ctx.font = '12px system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif';
-    wrapText(ctx, t, 20, 100, DESIGN_W - 40, 16);
+    wrapText(ctx, t || '', 20, 100, DESIGN_W - 40, 16);
   }
 
-  // ---- 对话气泡（场景下沿，贴着造物簿）----
+  // ---- 对话气泡（放在天空带 y≈296，绝不压地面/沟/农夫）----
   if (view.bubble && view.bubble.until > view.now) {
     const b = view.bubble;
     ctx.font = '14px system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif';
     const text = b.text || '';
     const w = Math.min(DESIGN_W - 40, Math.max(130, ctx.measureText(text).width + 28));
     const x = 20;
-    const y = 448;
+    const y = 296;
     ctx.fillStyle = 'rgba(250,246,236,0.96)';
     ctx.strokeStyle = 'rgba(90,80,64,0.5)';
     ctx.lineWidth = 1.4;
     roundRect(ctx, x, y, w, 50, 12); ctx.fill(); ctx.stroke();
+    // 小尾巴：指向左岸的农夫（气泡在天空带，读者要知道是谁在说话）
+    ctx.beginPath();
+    ctx.moveTo(x + 34, y + 48);
+    ctx.lineTo(x + 46, y + 62);
+    ctx.lineTo(x + 52, y + 47);
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(250,246,236,0.96)';
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(90,80,64,0.5)';
+    ctx.beginPath(); ctx.moveTo(x + 34, y + 49); ctx.lineTo(x + 46, y + 62); ctx.lineTo(x + 52, y + 48); ctx.stroke();
     ctx.fillStyle = '#6b6050';
     ctx.font = '11px system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif';
     ctx.fillText(b.who || '', x + 14, y + 17);
@@ -171,7 +185,14 @@ export function drawHud(ctx, view) {
       s && s.geo ? ('closed ' + s.geo.closed + '  nodes ' + s.geo.nodes + '  combos ' + s.combos.join('/')) : 'combos -',
       snap.propPos ? ('prop ' + snap.propPos.x.toFixed(0) + ',' + snap.propPos.y.toFixed(0)) : 'prop -',
       snap.plate && snap.plate.length ? ('plate ' + snap.plate[0].load.toFixed(1) + '/' + snap.plate[0].threshold + '  hold ' + snap.plate[0].holdMs.toFixed(0) + 'ms') : 'plate -',
-      'actor ' + (snap.actorPos ? snap.actorPos.x.toFixed(0) + ',' + snap.actorPos.y.toFixed(0) : '-') + '  fails ' + snap.failStreak,
+      // 位置分开报：B=物理圆心（body.position），R=渲染锚点（drawFarmer 的 cx,cy），feet=脚底 y。
+      // 三者关系固定：R === B（渲染直接用 body.position，没有任何偏移），feet = B.y + 14（r=14）。
+      // 画面上的人是按脚底放大 1.5× 的，但锚点仍是 B —— 所以"报的位置"和"画的位置"永远同一坐标系。
+      (snap.actorPos
+        ? ('actor B' + snap.actorPos.x.toFixed(0) + ',' + snap.actorPos.y.toFixed(0) +
+           '  R' + snap.actorPos.x.toFixed(0) + ',' + snap.actorPos.y.toFixed(0) +
+           '  feet ' + (snap.actorPos.y + 14).toFixed(0))
+        : 'actor -') + '  fails ' + snap.failStreak,
       '（本轮只做 4 个能力，其余 20 个未实装）',
     ];
     const bx = 176;
@@ -190,10 +211,22 @@ export function drawHud(ctx, view) {
     const d = view.impactDebug;
     ctx.font = '11px ui-monospace,Menlo,Consolas,monospace';
     ctx.fillStyle = d.gated ? 'rgba(150,90,20,0.95)' : 'rgba(30,90,50,0.95)';
-    ctx.fillText('impact score ' + d.score.toFixed(3) + '  ' + (d.gated ? 'GATED(' + d.reason + ')' : d.reason), 20, view.debug ? 300 : 120);
+    ctx.fillText('impact score ' + d.score.toFixed(3) + '  ' + (d.gated ? 'GATED(' + d.reason + ')' : d.reason), 20, view.debug ? 262 : 120);
   }
 
   ctx.restore();
+}
+
+/**
+ * 失败提示的取值（纯函数，便于单测）：字符串直接返回；{beam, other} 按形态分岔。
+ * 关2 的方向型对照靠这个分岔——它是"提示是否真的被说出"的**可断言入口**。
+ */
+export function pickFailHint(hints, hintLevel, form) {
+  if (!hints || !hints.length || !(hintLevel > 0)) return '';
+  const raw = hints[Math.min(hints.length - 1, hintLevel - 1)];
+  if (raw == null) return '';
+  if (typeof raw === 'string') return raw;
+  return (form === 'beam' ? raw.beam : raw.other) || '';
 }
 
 export function wrapText(ctx, text, x, y, maxW, lh) {

@@ -27,7 +27,8 @@ export function createCanvasSurface(canvasEl) {
     canvasEl.style.height = cssH + 'px';
     scale = Math.min(cssW / DESIGN_W, cssH / DESIGN_H);
     offX = (cssW - DESIGN_W * scale) / 2;
-    offY = (cssH - DESIGN_H * scale) / 2;
+    // 内容底部对齐：高瘦视口（按宽缩放时设计高度不足）也不会在底部留死区，多出来的余量放天空
+    offY = cssH - DESIGN_H * scale;
   }
 
   function beginFrame(bg) {
@@ -62,6 +63,21 @@ export function createCanvasSurface(canvasEl) {
     get scale() { return scale; },
     get dpr() { return dpr; },
     get cssSize() { return { w: cssW, h: cssH }; },
+    /** 布局自证：设计坐标矩形 + 换算到 CSS 像素后的真实边界（验收看 notebook.bottom === cssH） */
+    metrics() {
+      const sceneRect = { x: 0, y: 96, w: DESIGN_W, h: BOOK_TOP - 96 };
+      const notebookRect = { x: 0, y: BOOK_TOP, w: DESIGN_W, h: DESIGN_H - BOOK_TOP };
+      return {
+        cssW, cssH, dpr, scale, offX, offY,
+        contentTopCss: offY,
+        contentBottomCss: offY + DESIGN_H * scale,
+        sceneRect,
+        notebookRect,
+        notebookTopCss: offY + notebookRect.y * scale,
+        notebookBottomCss: offY + (notebookRect.y + notebookRect.h) * scale,
+        dprScale: dpr * scale,
+      };
+    },
   };
 }
 

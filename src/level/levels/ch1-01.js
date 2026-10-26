@@ -1,6 +1,10 @@
 /**
  * src/level/levels/ch1-01.js —— 关1 一个洞（难度 1，无机关）
- * 地形坐标一律 **中心点 + 宽高**（{x,y,w,h} 的 x/y 是 body 中心），旋转地形再加 angle。
+ * 地形坐标一律 **中心点 + 宽高**（{x,y,w,h} 的 x/y 是 body 中心）。
+ *
+ * 构图（阶段2 复审后重做）：横向构图，两岸地平线**对齐同一条水平线 y=430**，
+ * 中间是又深又暗的沟（下到底就上不来），农夫站在左岸地面上，田在右岸地面上。
+ * 沟宽 170px？不 —— 100px（164..334），约三个身位（农夫直径 28），玩家一眼能判断梁要跨多远。
  */
 export const LEVEL_CH1_01 = {
   id: 'ch1-01',
@@ -10,31 +14,38 @@ export const LEVEL_CH1_01 = {
   chips: ['harden'],
   spawnY: 84,
   terrain: [
-    { x: 73.5, y: 440, w: 187, h: 220, mat: 'ground' },   // 左岸 顶面 y=330（到 x=167）
-    { x: 346.5, y: 440, w: 167, h: 220, mat: 'ground' },  // 右岸 顶面 y=330（从 x=263）
-    { x: 215, y: 487, w: 96, h: 70, mat: 'ground' },      // 沟底 顶面 y=452（造物掉进去当装饰）
+    { x: 82, y: 471, w: 164, h: 82, mat: 'ground' },    // 左岸：x 0..164，顶面 430
+    { x: 382, y: 471, w: 96, h: 82, mat: 'ground' },    // 右岸（他的田）：x 334..430，顶面 430
   ],
-  actors: [{ kind: 'walker', x: 55, y: 314, targetX: 392, label: '农夫' }],
+  actors: [{ kind: 'walker', x: 58, y: 416, targetX: 392, label: '农夫' }],
   props: [],
   plates: [],
-  goal: { type: 'reachActor', x: 372, maxY: 392 },
-  resetActorIfBelowY: 420,     // 掉进沟里超过这个 y 就判一次失败
-  guides: [{ x: 167 }, { x: 263 }],
+  goal: { type: 'reachActor', x: 372, maxY: 446 },
+  resetActorIfBelowY: 560,
+  guides: [{ x: 164 }, { x: 334 }],
   hints: {
-    highlight: [{ x: 167, y: 330, r: 26 }, { x: 263, y: 330, r: 26 }],
-    beamOutline: { x1: 150, y1: 322, x2: 280, y2: 330 },
+    highlight: [{ x: 164, y: 430, r: 22 }, { x: 334, y: 430, r: 22 }],
+    beamOutline: { x1: 148, y1: 438, x2: 352, y2: 440 },
   },
   scenery: [
-    { kind: 'line', x1: 0, y1: 330, x2: 430, y2: 330, width: 2 },
-    { kind: 'text', x: 392, y: 306, text: '他的田', size: 11, align: 'right' },
-    { kind: 'circle', x: 320, y: 318, r: 7 },
-    { kind: 'circle', x: 345, y: 322, r: 6 },
-    { kind: 'circle', x: 300, y: 324, r: 5 },
-    { kind: 'rect', x: 40, y: 292, w: 46, h: 38 },
-    { kind: 'line', x1: 62, y1: 273, x2: 40, y2: 292, width: 2 },
-    { kind: 'line', x1: 62, y1: 273, x2: 86, y2: 292, width: 2 },
-    { kind: 'text', x: 215, y: 470, text: '（沟）', size: 10, align: 'center' },
+    { kind: 'hills' },
+    { kind: 'chasm', x1: 164, x2: 334, y: 430, depth: 83 },
+    { kind: 'line', x1: 0, y1: 430, x2: 164, y2: 430, width: 2.5 },
+    { kind: 'line', x1: 334, y1: 430, x2: 430, y2: 430, width: 2.5 },
+    // 左岸：两丛草，让"地"不是一块空板
+    { kind: 'crops', x1: 24, x2: 40, y: 430, n: 2, h: 8 },
+    { kind: 'crops', x1: 104, x2: 124, y: 430, n: 2, h: 9 },
+    // 右岸＝他的田：矮土垄 + 三根作物 + 木牌（三样东西一眼认成田）
+    { kind: 'ridge', x1: 336, x2: 428, y: 430, h: 9 },
+    { kind: 'crops', x1: 372, x2: 420, y: 430, n: 3, h: 26 },
+    { kind: 'sign', x: 353, y: 430, text: '田' },
+    { kind: 'text', x: 382, y: 480, text: '他的田', size: 10, align: 'center' },
+    { kind: 'text', x: 249, y: 470, text: '↓ 下去就上不来', size: 10, align: 'center', tone: 'light' },
   ],
-  lines: { intro: 'l1_intro', win: 'l1_win', failStreak: 'common_fail2', stamp: 'ch1_stamp' },
-  failHints: ['再画长一点：梁要跨过整道沟。', '沟沿会发光——那也是能踩的地方。', '照虚线画一条，加上「变硬」。'],
+  lines: { intro: 'l1_intro', win: 'l1_win', failStreak: 'common_fail2', stamp: null },
+  failHints: [
+    '两头都要搭到岸上才算桥。虚线是沟的两端。',
+    '中缝会折的桥踩上去会塌——点「变硬」把造物冻成一块整的。',
+    '扁长的梁最好用：从这头一直拉到那头，再点「变硬」。',
+  ],
 };
