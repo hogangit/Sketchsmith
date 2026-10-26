@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="app-version" content="0.2.0+20261026">
+<meta name="theme-color" content="#f4efe2">
+<title>我是造物主</title>
+<style>
+  html,body{margin:0;padding:0;height:100%;height:100dvh;overflow:hidden;background:#f4efe2;overscroll-behavior:none;}
+  body{
+    touch-action:none;
+    user-select:none;
+    -webkit-user-select:none;
+    -webkit-touch-callout:none;
+    -webkit-tap-highlight-color:transparent;
+    overscroll-behavior:none;
+    font-family:system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+  }
+  #game{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:none;}
+  #fallback{
+    position:fixed;inset:0;display:none;align-items:center;justify-content:center;
+    padding:24px;text-align:center;color:#3a332b;font-size:15px;line-height:1.6;
+  }
+</style>
+</head>
+<body>
+<canvas id="game" aria-label="我是造物主 造物簿"></canvas>
+<div id="fallback">这台设备没能启动造物笔。<br>请用较新版本的 Chrome / Safari / Edge 打开本文件。</div>
+<!--__VENDOR__-->
+<!--__APP__-->
+<!--__LICENSES__-->
+</body>
+</html>

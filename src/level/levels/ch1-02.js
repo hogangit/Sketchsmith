@@ -1,0 +1,69 @@
+/**
+ * src/level/levels/ch1-02.js —— 关2 滚下去的南瓜（难度 2，无机关）
+ *
+ * ── 与 levels.md 的偏差（必读，README「与设计案的偏差」逐条同步）──────────────
+ * levels.md 的三条参考解法都以「让南瓜滑/滚起来」为前提：① 圆轮 ② 变硬滑道 ③ 变硬雪橇。
+ * 实测 matter-js 的摩擦求解器（tests/probe2.mjs，全部实测数据，不是推测）：
+ *   · pair.friction = min(a,b)、pair.frictionStatic = max(a,b)，求解时相乘
+ *     → 接触对里只要有一方 friction>0，切向相对速度就被清零：0.05 与 0.9 的停止距离都是 ≈8px
+ *   · 只有 friction 恒为 0 才真的滑得起来（「圆的东西」在本引擎里的等价写法）
+ *   · friction=0 的滑行体**任何 ≥5px 的台阶都会把它彻底卡死**（实测 5px 就停住）
+ * 结论：本引擎里不存在「平地架桥 → 南瓜一路滑过去」——玩家画的梁一定会比岸面高一个梁厚。
+ *
+ * 本关只用一条可靠的物理事实：**南瓜只会往下走**。关卡几何为此专门设计：
+ *   南瓜地平台(top 300) ── 落差 60px ──▶ 玩家架的桥（搭在两侧河岸 top 360 上，桥面 ≈351）
+ *                                        ── 落差 9px ──▶ 集市河岸(top 360)
+ *   · 玩家不架桥 → 南瓜滑出平台直接落进小河 → 重来（不惩罚，只是提示）
+ *   · 桥只要「两头都搭到河岸上」就成立；桥面高度必须低于平台，所以桥越薄越贴、越厚越靠下，
+ *     两种都成立 —— 这就是为什么「梁」和「厚团块」都能过，而「薄得像纸的团块」反而会卡住。
+ *   → 教学点从「形状决定形态」偏向「强度」：南瓜落地 13.4kg，中缝会折的软梁接不住它，
+ *     必须「变硬」把它冻成一块整的。
+ *   → 「会滚」是**干扰芯片**：南瓜本身就是 friction=0 的滑行体，给桥面降摩擦毫无变化。
+ *     已如实记录（README），不承当必需路径。
+ */
+export const LEVEL_CH1_02 = {
+  id: 'ch1-02',
+  chapter: 1,
+  title: '滚下去的南瓜',
+  subtitle: '它不肯走。它是方的。',
+  chips: ['harden', 'roll'],
+  spawnY: 84,
+  terrain: [
+    { x: 115, y: 400, w: 230, h: 80, mat: 'ground' },   // 左岸 顶面 360，x 0..230
+    { x: 85, y: 330, w: 170, h: 60, mat: 'ground' },    // 南瓜地平台 顶面 300，x 0..170
+    { x: 385, y: 400, w: 90, h: 80, mat: 'ground' },    // 右岸（山脚集市）顶面 360，x 340..430
+  ],
+  actors: [],
+  props: [{
+    kind: 'pumpkin', x: 80, y: 269, w: 62, h: 62, label: '南瓜',
+    graceMs: 999999,      // 先钉住，等玩家把桥架好再放手（releaseOnSpawn 改成 1.5s）
+    releaseOnSpawn: true,
+    vx0: 0.8,             // 农夫推的那一把：很小，但它再也不停
+  }],
+  plates: [],
+  goal: { type: 'propReach', propIndex: 0, x: 372 },
+  resetPropIfBelowY: 560,
+  propReleaseDelayMs: 1500,   // 造物落地后 1.5s 南瓜才开始滑
+  guides: [{ x: 230 }, { x: 340 }],
+  hints: {
+    highlight: [{ x: 230, y: 360, r: 22 }, { x: 340, y: 360, r: 22 }],
+    beamOutline: { x1: 182, y1: 388, x2: 356, y2: 392 },
+  },
+  scenery: [
+    { kind: 'line', x1: 0, y1: 300, x2: 170, y2: 300, width: 2 },
+    { kind: 'line', x1: 170, y1: 300, x2: 170, y2: 360, width: 2 },
+    { kind: 'line', x1: 0, y1: 360, x2: 230, y2: 360, width: 2 },
+    { kind: 'line', x1: 340, y1: 360, x2: 430, y2: 360, width: 2 },
+    { kind: 'line', x1: 230, y1: 372, x2: 340, y2: 372, width: 1.5, dash: true },
+    { kind: 'text', x: 285, y: 512, text: '（小河，南瓜掉下去就成鱼了）', size: 10, align: 'center' },
+    { kind: 'rect', x: 400, y: 334, w: 44, h: 26 },
+    { kind: 'text', x: 400, y: 350, text: '集市', size: 10, align: 'center' },
+    { kind: 'text', x: 60, y: 286, text: '南瓜地（高）', size: 10, align: 'center' },
+  ],
+  lines: { intro: 'l2_intro', win: 'l2_win', failStreak: 'common_fail2', stamp: null },
+  failHints: [
+    '南瓜只会往下走。桥要横在沟里、两头都搭到河岸上，让南瓜从高台落到桥面。',
+    '中缝会折的软梁接不住 13kg 的南瓜，落地就塌——点「变硬」把它冻成一块整的。',
+    '梁或团块都行，两头压住两岸，再点「变硬」。团块别画太厚，顶到高台边会挡住南瓜。',
+  ],
+};
