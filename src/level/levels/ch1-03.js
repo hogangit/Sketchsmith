@@ -40,6 +40,6 @@ export const LEVEL_CH1_03 = {
     { kind: 'line', x1: 150, y1: 444, x2: 190, y2: 456, width: 1 },
     { kind: 'text', x: 105, y: 468, text: '田裂了', size: 10, align: 'center' },
   ],
-  lines: { intro: 'l3_intro', win: 'l3_win', failStreak: 'common_fail2', stamp: 'ch1_stamp' },
+  lines: { intro: 'l3_intro', win: 'l3_win', failStreak: 'common_fail2', stamp: 'stamp1' },
   failHints: ['光靠你和一块小石头，压不动。', '「变重」——质量 ×3。', '把变重的东西丢到踏板上，然后走开。'],
 };

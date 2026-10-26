@@ -152,3 +152,20 @@ test('关2 首次失败提示按形态分岔（方向型对照）', async () => 
     }
   }
 });
+
+
+test('台词闭集：关卡只许引用 lines.js 里存在的 id，形态台词只有 6 条', async () => {
+  const { LINES } = await import(pathToFileURL(path.join(ROOT, 'src/text/lines.js')).href);
+  // 形态台词 = 闭集（附录 A 的 6 条）；多一条少一条都要在这里失败
+  const formIds = Object.keys(LINES).filter((k) => k.indexOf('form_') === 0).sort();
+  assert.equal(formIds.length, 6, '形态台词必须是 6 条闭集，实际 ' + formIds.length);
+  // 三关的 lines 槽位指向的 id 必须真实存在（写错的 id 在运行时只会静默不出声）
+  const levelMods = [env.levels.l1.LEVEL_CH1_01, env.levels.l2.LEVEL_CH1_02, env.levels.l3.LEVEL_CH1_03];
+  for (const lv of levelMods) {
+    for (const slot of Object.keys(lv.lines || {})) {
+      const id = lv.lines[slot];
+      if (id == null) continue;
+      assert.ok(LINES[id], '关 ' + lv.id + ' 的 lines.' + slot + ' 指向了不存在的台词 id: ' + id);
+    }
+  }
+});
