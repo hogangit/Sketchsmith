@@ -12,7 +12,7 @@ import { SAVE_KEY_PROGRESS, SAVE_SCHEMA_VERSION, loadProgress, saveProgress } fr
 import { createLocalStorageSaveStore } from './platform/local-storage-save-store.js';
 import { createCanvasSurface, createStaticLayer } from './render/canvas.js';
 import { drawFreehandStroke, drawPaper } from './render/handdrawn.js';
-import { buttonAt, chipIndexAt, drawHud } from './render/hud.js';
+import { chipIndexAt, drawHud, headerButtonAt } from './render/hud.js';
 import { createStrokeCapture } from './stroke/capture.js';
 import { analyzeStrokeGroup } from './stroke/classify.js';
 import { createPhysicsWorld } from './physics/world.js';
@@ -219,7 +219,7 @@ export function boot() {
       else nextLevel();
       return true;
     }
-    const btn = buttonAt(x, y);
+    const btn = headerButtonAt(x, y);
     if (btn === 'retry') { AudioBus.play('ui'); retryLevel(); return true; }
     if (btn === 'audio') {
       view.audioOn = !view.audioOn;
@@ -227,7 +227,7 @@ export function boot() {
       AudioBus.play('ui');
       return true;
     }
-    const ci = chipIndexAt(x, y);
+    const ci = chipIndexAt(x, y, (view.level.chips || []).length);
     if (ci >= 0) {
       const id = (view.level.chips || [])[ci];
       if (!id || IMPLEMENTED_ABILITY_IDS.indexOf(id) < 0) return true;

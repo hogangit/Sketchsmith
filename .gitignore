@@ -1,0 +1,8 @@
+# 产物与依赖不进版本库（技术基线 §2：src/ 与 dist/ 分目录，dist 排除）
+dist/
+node_modules/
+
+# 系统与编辑器
+.DS_Store
+Thumbs.db
+*.log
