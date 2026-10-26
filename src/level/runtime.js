@@ -364,6 +364,17 @@ export function createLevelRuntime(opts) {
     } else if (g.type === 'propReach') {
       const p = state.props[g.propIndex || 0];
       if (p && p.position.x >= g.x) win('prop-delivered');
+    } else if (g.type === 'propInZone') {
+      // 关2：收货口是一个区域，不是一个 x 坐标。
+      // 进去 = 成功；落到同一高度但在区域外 = 砸在沟底石头上 = 碎（失败），两者同帧互斥。
+      const p = state.props[g.propIndex || 0];
+      if (!p) return;
+      if (p.position.y < g.y) {
+        if (p.position.y < 200) state.propSmashed = false;   // 南瓜被重置回台上，标记复位
+        return;
+      }
+      if (p.position.x >= g.x1 && p.position.x <= g.x2) win('prop-caught');
+      else if (!state.propSmashed) { state.propSmashed = true; fail('prop-smashed'); }
     } else if (g.type === 'plateSustained') {
       const p = state.plates.find((x) => x.def.id === g.plateId) || state.plates[0];
       if (p && p.on) win('plate-sustained');

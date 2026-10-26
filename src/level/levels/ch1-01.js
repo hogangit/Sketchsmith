@@ -40,7 +40,7 @@ export const LEVEL_CH1_01 = {
     { kind: 'crops', x1: 372, x2: 420, y: 430, n: 3, h: 26 },
     { kind: 'sign', x: 353, y: 430, text: '田' },
     { kind: 'text', x: 382, y: 480, text: '他的田', size: 10, align: 'center' },
-    { kind: 'text', x: 249, y: 470, text: '↓ 下去就上不来', size: 10, align: 'center', tone: 'light' },
+    { kind: 'text', x: 249, y: 470, text: '下去就上不来', size: 10, align: 'center', tone: 'light' },
   ],
   lines: { intro: 'l1_intro', win: 'l1_win', failStreak: 'common_fail2', stamp: null },
   failHints: [
