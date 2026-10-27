@@ -14,19 +14,25 @@ const HUD_CHIP_Y = 8;
 const HUD_PAD = 12;
 
 const ABILITY_LABELS = {
-  harden: '变硬', roll: '会滚', heavy: '变重', light: '变轻',
+  harden: '变硬', roll: '会滚', heavy: '变重', light: '变轻', tickle: '怕痒',
 };
 
 /** 芯片按「右对齐、与标题同行」排布；n 由当前关卡芯片数决定 */
 export function chipRect(i, n) {
-  const count = Math.max(1, Math.min(4, n || 4));
-  const total = count * HUD_CHIP_W + (count - 1) * HUD_CHIP_GAP;
+  // ⚠️ 原来 Math.min(4, n) 把 5 枚钳到 4：第 5 枚（怕痒）直接溢出右边界
+  const count = Math.max(1, n || 4);
+  // 5 枚起缩窄芯片：66px 一枚时 5 枚总宽 354、右对齐后 x0=64，会压到左侧标题（标题止于 x≈100）；
+  // 56px 一枚时总宽 304、x0=114，与标题不重叠
+  const w = count > 4 ? 56 : HUD_CHIP_W;
+  const total = count * w + (count - 1) * HUD_CHIP_GAP;
   const x0 = DESIGN_W - HUD_PAD - total;
-  return { x: x0 + i * (HUD_CHIP_W + HUD_CHIP_GAP), y: HUD_CHIP_Y, w: HUD_CHIP_W, h: HUD_CHIP_H };
+  return { x: x0 + i * (w + HUD_CHIP_GAP), y: HUD_CHIP_Y, w, h: HUD_CHIP_H };
 }
 
 export function chipIndexAt(x, y, n) {
-  for (let i = 0; i < 4; i++) {
+  // ⚠️ 原来 i < 4 写死：第 5 枚芯片看得见却**点不到**（关5/沙盒的「怕痒」由此失灵）
+  const count = Math.max(1, n || 4);
+  for (let i = 0; i < count; i++) {
     const r = chipRect(i, n);
     if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) return i;
   }
@@ -73,7 +79,8 @@ export function drawHud(ctx, view) {
   ctx.fillText(headLabel + '　' + (view.level.subtitle || ''), 20, 48);
 
   const armed = snap.armedAbilities || [];
-  for (let i = 0; i < chips.length && i < 4; i++) {
+  // ⚠️ 原来还有个 && i < 4 写死：第 5 枚芯片（怕痒）永远画不出来。上限交给 chipRect 的宽度适配
+  for (let i = 0; i < chips.length; i++) {
     const r = chipRect(i, chips.length);
     const id = chips[i];
     const on = armed.indexOf(id) >= 0;
