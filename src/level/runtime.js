@@ -9,7 +9,7 @@
  *   → { spawnCreature, setAbility, toggleAbility, step, snapshot, destroy, state }
  */
 import { DESIGN_W } from '../core/config.js';
-import { ACTOR, DENSITY_PUMPKIN, FIXED_STEP_MS, MATERIALS, PLATE } from '../physics/materials.js';
+import { ACTOR, DENSITY_FISH, DENSITY_PUMPKIN, FIXED_STEP_MS, MATERIALS, PLATE, TICKLE_COOLDOWN_MS } from '../physics/materials.js';
 import { buildCreatureBody } from '../physics/body-factory.js';
 import { composeAbilities } from '../abilities/compose.js';
 import { BodyBudget } from '../physics/budget.js';
@@ -58,6 +58,7 @@ function spawnWalkerBody(def, world) {
     lastX: def.x,
     pitMs: 0,
     jumping: 0,
+    biteCd: 0,
   };
 }
 
@@ -139,6 +140,27 @@ export function createLevelRuntime(opts) {
   // 失败时**不销毁旧南瓜**（D26）：它留在停下的地方，只在原位再长一颗新的。
   // 理由：重生是这个游戏里唯一会拿走玩家东西的操作，能少拿一次就少拿一次。
   function createProp(def, isRespawn) {
+    // 鱼（关5 动态 prop，南瓜同族先例，非机关）：水平巡游 + 顶回小人，不固定/不破坏任何物体
+    if (def.kind === 'fish') {
+      const mat = MATERIALS.fish;
+      const body = MATTER_RT.Bodies.rectangle(def.x, def.y, def.w, def.h, {
+        label: 'prop', friction: mat.friction, frictionStatic: mat.frictionStatic,
+        restitution: mat.restitution, frictionAir: mat.frictionAir,
+      });
+      MATTER_RT.Body.setDensity(body, DENSITY_FISH);   // 红线 L6：密度只在 materials.js 里写
+      body.plugin = {
+        kind: 'fish', home: { x: def.x, y: def.y }, homeY: def.y,
+        vx0: Number.isFinite(def.vx0) ? def.vx0 : 0,
+        xMin: Number.isFinite(def.xMin) ? def.xMin : def.x - 40,
+        xMax: Number.isFinite(def.xMax) ? def.xMax : def.x + 40,
+        stallMs: 0, settleMs: 0, isRespawn: !!isRespawn,
+      };
+      if (Number.isFinite(def.vx0)) MATTER_RT.Body.setVelocity(body, { x: def.vx0, y: 0 });
+      world.addBody(body);
+      state.props.push(body);
+      return body;
+    }
+    // 南瓜（关2，D26 不变）
     const mat = MATERIALS.pumpkin;
     const body = MATTER_RT.Bodies.rectangle(def.x, def.y, def.w, def.h, {
       label: 'prop', friction: mat.friction, frictionStatic: mat.frictionStatic,
@@ -158,6 +180,60 @@ export function createLevelRuntime(opts) {
   }
   for (const p of level.props || []) createProp(p, false);
   state.activeProp = 0;
+
+  // ---- 怕痒 onContact 钩子分发（D15：碰撞 → 给接触方施加 Δv=TICKLE_K 恒定冲量）----
+  // 由 compose 收集到的 hooks.onContact 在碰撞时被注入 { Matter, matterBody, otherBody, normal, nowMs }。
+  // 怕痒体用「运行时维护的 id 集合」标记（不在 matter body.plugin 上挂 tickle 布尔）。
+  //
+  // ⚠️ 施加时机（实测决定，关键）：冲量必须在**求解器执行之前**施加（见 step 里的 beforeStep 调度），
+  // 复用 stepWalker 改速度的同一安全路径。实测若放在物理步「之后」读 collisionActive 再施加，
+  // 小人/造物处在「深接触」态（如板被压进地面约 10px 的准稳态）时，下一物理步求解器会把
+  // 这份被回写的速度与已有的穿透修正叠加，解出无穷大分离速度 → 全场 NaN（f117 复现）。
+  // 放在求解器之前，冲量作为本步求解的正常输入，与 stepWalker 的 setVelocity 等价安全。
+  const tickleCooldown = new Map();   // 同对刚体 200ms 冷却，防一次接触跨多子步连发
+  const tickleBodyIds = new Set();    // 当前场上带怕痒的造物刚体 id
+  function markTickle(c, on) {
+    if (!(c.composed && c.composed.flags && c.composed.flags.tickle)) return;
+    for (const b of c.bodies) { if (on) tickleBodyIds.add(b.id); else tickleBodyIds.delete(b.id); }
+  }
+  function applyTickle(tickleBody, other, pair) {
+    if (!other || other.isStatic) return;                  // 不弹静态体
+    if (other.plugin && other.plugin.creature) return;     // 不弹自己阵营的造物
+    const c = tickleBody.plugin && tickleBody.plugin.creature;
+    if (!c || !c.composed || !c.composed.hooks) return;
+    const hooks = c.composed.hooks.filter((h) => h.event === 'onContact');
+    if (!hooks.length) return;
+    const nowMs = state.elapsedMs;
+    const key = Math.min(tickleBody.id, other.id) + '+' + Math.max(tickleBody.id, other.id);
+    const last = tickleCooldown.get(key);
+    if (last != null && nowMs - last < TICKLE_COOLDOWN_MS) return;
+    tickleCooldown.set(key, nowMs);
+    const n = pair.collision && pair.collision.normal
+      ? { x: pair.collision.normal.x, y: pair.collision.normal.y }
+      : { x: 0, y: -1 };
+    for (const h of hooks) {
+      if (typeof console !== 'undefined' && console.__tickleApply) {
+        const a = tickleBody.position, b = other.position;
+        const dx = b.x - a.x, dy = b.y - a.y;
+        console.error('[apply] mb=', a, 'ob=', b, 'obv=', other.velocity, 'dx,dy=', dx.toFixed(2), dy.toFixed(2));
+      }
+      h.fn({ Matter: MATTER_RT, matterBody: tickleBody, otherBody: other, normal: n, nowMs });
+    }
+    emit('creature:tickle', { creatureId: c.id });
+  }
+  /** 物理步结束后调用：扫描当前活跃碰撞对，对已识别的怕痒接触施加冲量（求解器外，安全） */
+  function flushTickles() {
+    if (!tickleBodyIds.size) return;
+    const pairs = (world.engine.pairs && world.engine.pairs.collisionActive) || [];
+    for (const pair of pairs) {
+      if (!pair.isActive) continue;
+      const a = pair.bodyA, b = pair.bodyB;
+      const ta = tickleBodyIds.has(a.id);
+      const tb = tickleBodyIds.has(b.id);
+      if (ta && !tb) applyTickle(a, b, pair);
+      else if (tb && !ta) applyTickle(b, a, pair);
+    }
+  }
 
   // ---- 压板 ----
   for (const pl of level.plates || []) {
@@ -180,6 +256,7 @@ export function createLevelRuntime(opts) {
   }
 
   function despawnCreature(c) {
+    markTickle(c, false);
     removeCreatureBodies(c);
     BodyBudget.release();
     const i = state.creatures.indexOf(c);
@@ -225,7 +302,12 @@ export function createLevelRuntime(opts) {
       spawn,
       bornAt: state.elapsedMs,
     };
-    for (const b of c.bodies) { b.plugin = b.plugin || {}; b.plugin.landingFrames = LANDING_FRAMES; }
+    for (const b of c.bodies) {
+      b.plugin = b.plugin || {};
+      b.plugin.landingFrames = LANDING_FRAMES;
+      b.plugin.creature = c;
+    }
+    markTickle(c, true);
     addCreatureBodies(c);
     state.creatures.push(c);
     state.activeCreature = c;
@@ -276,11 +358,15 @@ export function createLevelRuntime(opts) {
     c.degraded = built.degraded;
     c.composed = composed;
     addCreatureBodies(c);
+    markTickle(c, false);   // 清掉旧刚体 id（如从软梁重建成硬梁，刚体已换）
     for (const b of c.bodies) {
+      b.plugin = b.plugin || {};
+      b.plugin.creature = c;
       MATTER_RT.Body.setVelocity(b, vel);
       MATTER_RT.Body.setAngularVelocity(b, av);
       if (c.bodies.length === 1) MATTER_RT.Body.setAngle(b, ang);
     }
+    markTickle(c, true);
   }
 
   /** 点芯片：有造物就重建它，没造物就预选给下一个 */
@@ -408,6 +494,7 @@ export function createLevelRuntime(opts) {
 
   function checkGoal() {
     const g = level.goal;
+    if (!g) return;   // 沙盒：goal=null → 永不 win / 永不 fail
     if (g.type === 'reachActor') {
       const a = state.actor;
       if (a && a.body.position.x >= g.x && a.body.position.y <= (g.maxY == null ? 400 : g.maxY)) win('actor-crossed');
@@ -503,6 +590,7 @@ export function createLevelRuntime(opts) {
     if (level.goal && level.goal.type === 'propInZone') return;
     for (const p of state.props) {
       if (!p.plugin || p.isStatic) continue;
+      if (p.plugin.kind === 'fish') continue;   // 鱼不判停滞失败（非南瓜机制）
       const speed = Math.hypot(p.velocity.x, p.velocity.y);
       if (speed < 0.12) p.plugin.stallMs += dtMs; else p.plugin.stallMs = 0;
       if (p.plugin.stallMs > 3000) {
@@ -523,6 +611,7 @@ export function createLevelRuntime(opts) {
     const limit = level.resetPropIfBelowY;
     if (limit == null) return;
     for (const p of state.props.slice()) {
+      if (p.plugin.kind === 'fish') continue;   // 鱼锁定在 swim line，不参与掉出回收
       if (p.position.y <= limit || p.plugin.verdict) continue;
       // 掉出世界了：这一颗确实留不住（它不是"停在哪"，是没了），所以从世界里移走再补一颗。
       p.plugin.verdict = 'prop-lost';
@@ -538,9 +627,42 @@ export function createLevelRuntime(opts) {
     }
   }
 
+  /** 关5 鱼：水平巡游（xMin/xMax 间按 vx0 往返、遇界反弹），锁定在 swim line（抵消无河床重力），
+   *  撞到小人就把它顶回岸边（纯碰撞 + 重置，非机关、不伤害）。 */
+  function updateFish(dtMs) {
+    for (const p of state.props) {
+      if (!p.plugin || p.plugin.kind !== 'fish') continue;
+      const xMin = p.plugin.xMin, xMax = p.plugin.xMax, vx0 = p.plugin.vx0, homeY = p.plugin.homeY;
+      let vx = p.velocity.x;
+      if (vx === 0) vx = vx0;
+      if (p.position.x <= xMin && vx < 0) vx = Math.abs(vx0);
+      else if (p.position.x >= xMax && vx > 0) vx = -Math.abs(vx0);
+      // 锁定 swim line：每帧手动抵消重力（河里无河床），鱼才不会掉进虚空
+      if (Math.abs(p.position.y - homeY) > 1.5) MATTER_RT.Body.setPosition(p, { x: p.position.x, y: homeY });
+      MATTER_RT.Body.setVelocity(p, { x: vx, y: 0 });
+      // 顶回小人（不咬不伤：撞到就重置，失败可推进）
+      if (state.actor) {
+        const dx = p.position.x - state.actor.body.position.x;
+        const dy = p.position.y - state.actor.body.position.y;
+        if (Math.hypot(dx, dy) < ACTOR.radius + 22) {
+          if ((state.actor.biteCd || 0) <= 0) {
+            state.actor.biteCd = 700;
+            resetActorForRetry();
+            fail('actor-bitten');
+            emit('actor:bitten', { by: 'fish' });
+          }
+        }
+      }
+    }
+  }
+
   function step(frames) {
     const n = frames == null ? 1 : Math.max(1, frames | 0);
     const advanced = world.stepFrame(n, (subDt) => {
+      // 怕痒冲量：在求解器「之前」施加（用上一物理步留下的活跃碰撞对），与 stepWalker 的
+      // setVelocity 同一条安全路径。放在物理步「之后」改速度会让深接触态的小人/造物在下一步
+      // 求解时爆 NaN（实测 f117 全场 NaN）。见上方 dispatcher 注释。
+      flushTickles();
       if (state.actor && state.actor.active && state.status === 'playing') stepWalker(state.actor, world, subDt);
       // 造物落地缓冲：生成后 26 帧内限制下落速度，让“架在沟沿上”是可控而非撞运气
       for (const c of state.creatures) {
@@ -567,10 +689,12 @@ export function createLevelRuntime(opts) {
       state.actor.active = true;
       emit('actor:go', { label: state.actor.label, retry: true });
     }
+    if (state.actor && state.actor.biteCd > 0) state.actor.biteCd = Math.max(0, state.actor.biteCd - dt);
     updateWalker(dt);
     updatePropGrace(dt);
     updatePropStall(dt);
     updatePropReset();
+    updateFish(dt);
     updatePlates(dt);
     updatePlateSoftFail(dt);
     // 淡出中的造物：透明度线性衰减，归零才真正移除

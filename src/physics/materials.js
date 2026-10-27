@@ -19,6 +19,11 @@ export const GRAIN_MAX_RADIUS = 9;
 
 export const DENSITY_CREATURE = 0.0025; // 质量 = 面积 × 密度 → 「画多大就有多重」
 export const DENSITY_PUMPKIN = 0.0035;
+/**
+ * 鱼（关5 动态 prop，南瓜同族先例，非机关）：比南瓜轻一点，被怕痒弹一下就明显回弹。
+ * 红线 L6：密度只在 materials.js 里写。
+ */
+export const DENSITY_FISH = 0.0022;
 
 /** 造物“软”基线：不加变硬时它在沟沿上会弹走/滑走（关1 的教学性失败） */
 export const CREATURE_SOFT = { friction: 0.05, frictionStatic: 0.08, restitution: 0.32, frictionAir: 0.02 };
@@ -41,6 +46,18 @@ export const CREATURE_ROLL = { frictionAirMul: 0.25 };
 export const DENSITY_MUL_HEAVY = 3;
 export const DENSITY_MUL_LIGHT = 0.2;
 
+/**
+ * 怕痒（tickle）冲量标定（D15：J = k × mass ⇒ Δv 恒定）。
+ * 施加到「被接触的另一个刚体」上的冲量 = TICKLE_K × 该刚体质量，故 Δv = TICKLE_K，
+ * 与被弹的造物画多大无关（面积差 2 倍 → Δv 差 ≤5%，实测见 tests/tickle-dv.mjs）。
+ * 与变轻叠加时 J 不随造物质量缩放 ⇒ 天然 no-op（tests/l4-light-noop.mjs）。
+ * [待实测标定] 初值取 8.5：让站在高台下约 114px 处的小人能被稳定弹上高台顶面（y=300）。
+ */
+export const TICKLE_K = 8.5;
+
+/** 怕痒同对刚体冷却（毫秒），防一次接触跨多子步连发 */
+export const TICKLE_COOLDOWN_MS = 200;
+
 export const MATERIALS = {
   ground: { friction: 0.9, frictionStatic: 1.0, restitution: 0.02 },
   slope:  { friction: 0.9, frictionStatic: 1.0, restitution: 0.02 },
@@ -57,6 +74,12 @@ export const MATERIALS = {
    */
   pumpkin: { friction: 0.5, frictionStatic: 0.6, restitution: 0, frictionAir: 0.002 },
   ice:    { friction: 0.08, frictionStatic: 0.05, restitution: 0.0 },
+  /**
+   * 鱼（关5 动态 prop，南瓜同族先例，非机关）：低摩擦、易摆、微阻。
+   * 它只做「碰撞 → 顶回小人」一件事（纯物理接触 + 重置），不固定/不破坏/不移除任何物体。
+   * 儿童安全：鱼「顶」不「咬」，小人被顶回岸边浮在水面，绝不表现伤害。
+   */
+  fish: { friction: 0.3, frictionStatic: 0.4, restitution: 0.2, frictionAir: 0.02 },
 };
 
 

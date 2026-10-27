@@ -14,6 +14,13 @@ export const COMBO_TABLE = {
     bonus: { densityMul: 1.0 },
     note: '不变形的轮子：滚得稳，还抓得住砸下来的东西',
   },
+  'harden+tickle': {
+    id: 'harden+tickle',
+    name: '弹射板',
+    line: 'combo_harden_tickle',
+    bonus: { densityMul: 1.0 },
+    note: '不变形的弹射板：怕痒只在变硬后才立得住，软板会被自己弹塌',
+  },
 };
 
 export function comboKey(ids) {

@@ -10,7 +10,7 @@
  * 其余 20 个只登记名字（PLANNED_ABILITY_NAMES），**没有记录、没有实现**，不许当已完成。
  */
 import {
-  CREATURE_HARD, CREATURE_ROLL, DENSITY_MUL_HEAVY, DENSITY_MUL_LIGHT,
+  CREATURE_HARD, CREATURE_ROLL, DENSITY_MUL_HEAVY, DENSITY_MUL_LIGHT, MATERIALS,
 } from '../physics/materials.js';
 
 export const ABILITIES = {
@@ -60,13 +60,50 @@ export const ABILITIES = {
     conflicts: [],
     blurb: '质量 ×0.2，一碰就飞（本轮仅实装数值，未进关卡）',
   },
+  /**
+   * 怕痒（tickle）：被任何刚体接触时，沿接触法线**反方向**给「接触方」施加一次冲量
+   * J = TICKLE_K × 接触方质量 ⇒ Δv = TICKLE_K 恒定（D15：画粗画细弹一样高，不抽奖）。
+   * 纯 D15 钩子能力，约 30 行。不弹自己、不弹静态体、200ms 同对冷却防多子步连发。
+   * 与变轻叠加天然 no-op（J 不随造物质量缩放 ⇒ Δv 不变，D15）。
+   * hooks.onContact.fn 由 runtime 在 collisionStart 中注入 { Matter, matterBody, otherBody, normal, nowMs } 后调用。
+   */
+  tickle: {
+    id: 'tickle', name: '怕痒', chapter: 4,
+    layer: 'sense', priority: 30,
+    mods: {},
+    flags: { tickle: true },
+    hooks: {
+      onContact: {
+        order: 10,
+        fn(ctx) {
+          const M = ctx.Matter;
+          const other = ctx.otherBody;
+          if (!other || other.isStatic) return;
+          // 方向：把接触方推离怕痒体（用分离方向，等价于「沿法线反方向」且不依赖 matter 法线符号）
+          const a = ctx.matterBody.position;
+          const b = other.position;
+          let dx = b.x - a.x, dy = b.y - a.y;
+          const len = Math.hypot(dx, dy) || 1;
+          dx /= len; dy /= len;
+          const k = MATERIALS.TICKLE_K;
+          M.Body.setVelocity(other, {
+            x: other.velocity.x + dx * k,
+            y: other.velocity.y + dy * k,
+          });
+        },
+      },
+    },
+    tags: ['active'],
+    conflicts: [],
+    blurb: '被碰就弹别人一下：Δv 恒定，画多大都一样（D15 配对主解）',
+  },
 };
 
-export const IMPLEMENTED_ABILITY_IDS = ['harden', 'roll', 'heavy', 'light'];
+export const IMPLEMENTED_ABILITY_IDS = ['harden', 'roll', 'heavy', 'light', 'tickle'];
 
-/** 池子里另外 20 个：只有名字，尚未实现（不许算进「已实装」） */
+/** 池子里另外的未实装能力：只有名字，尚未实现（不许算进「已实装」） */
 export const PLANNED_ABILITY_NAMES = [
-  '怕痒', '会说话', '透明', '滑', '黏', '发光', '可燃', '时间慢', '无限长', '复制',
+  '会说话', '透明', '滑', '黏', '发光', '可燃', '时间慢', '无限长', '复制',
   '磁', '反重力', '会跳', '防水', '导电', '吸水', '倒转', '一刀切', '饿', '记仇',
 ];
 

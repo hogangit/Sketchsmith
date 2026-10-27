@@ -73,9 +73,11 @@ test('能力合成 R1–R3：乘算键 + 会滚一个 friction 都不写（D16�
   assert.ok(Math.abs(c3.mods.frictionAirMul - 0.25) < 1e-9, '点选顺序不影响乘算键');
 });
 
-test('能力上限：每造物最多 2 枚（runtime 侧拒绝第 3 枚）', () => {
-  assert.equal(registry.IMPLEMENTED_ABILITY_IDS.length, 4);
-  assert.equal(registry.PLANNED_ABILITY_NAMES.length, 20);
+test('能力表规模：已实装 5 个 / 计划 19 个（怕痒转正后同步，且不许两边重复登记）', () => {
+  assert.equal(registry.IMPLEMENTED_ABILITY_IDS.length, 5, '已实装：变硬/会滚/变重/变轻/怕痒');
+  assert.equal(registry.PLANNED_ABILITY_NAMES.length, 19);
+  // 一张能力只能在一张表里：怕痒已转正，就不许还留在计划表（重复登记会让芯片面板出现两个入口）
+  assert.equal(registry.PLANNED_ABILITY_NAMES.includes('tickle'), false, '怕痒不许同时出现在计划表');
   const th = env.materials && 1;
   assert.equal(typeof th, 'number');
 });
