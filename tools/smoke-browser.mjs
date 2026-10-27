@@ -26,6 +26,8 @@ const CASES = [
   { level: 0, name: 'L1 梁+变硬', line: [148, 700, 352, 703], ability: 'harden' },
   { level: 1, name: 'L2 梁+变硬', line: [182, 700, 356, 704], ability: 'harden' },
   { level: 2, name: 'L3 团块+变重', circle: [340, 700, 34], ability: 'heavy' },
+  // 关4 弹射主解需两个能力（变硬+怕痒），本表每格只贴一个 ⇒ 先不进冒烟，待弹射标定后再加
+  { level: 4, name: 'L5 跨河长桥+变硬', line: [140, 700, 292, 704], ability: 'harden' },
 ];
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
