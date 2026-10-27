@@ -26,7 +26,10 @@ const CASES = [
   { level: 0, name: 'L1 梁+变硬', line: [148, 700, 352, 703], ability: 'harden' },
   { level: 1, name: 'L2 梁+变硬', line: [182, 700, 356, 704], ability: 'harden' },
   { level: 2, name: 'L3 团块+变重', circle: [340, 700, 34], ability: 'heavy' },
-  // 关4 弹射主解需两个能力（变硬+怕痒），本表每格只贴一个 ⇒ 先不进冒烟，待弹射标定后再加
+  // ⚠️ 关4 弹射主解**实测未过**，撤出冒烟表待标定（别让每次 smoke 都红，也别假装它过了）：
+  //   薄板 x180..250 + 变硬+怕痒 ⇒ 卡在 playing 16s，小人上不去。
+  //   造物生成**是对的**（form=beam, abilities=[harden,tickle], mass=1.86）⇒ 不是接线问题，
+  //   是「垂直弹射不带水平位移」这个物理事实。标定方案见 README 第六节。
   { level: 4, name: 'L5 跨河长桥+变硬', line: [140, 700, 292, 704], ability: 'harden' },
 ];
 
@@ -121,7 +124,9 @@ async function main() {
         : `(()=>{const pts=[];const[x1,y1,x2,y2]=[${c.line[0]},${c.line[1]},${c.line[2]},${c.line[3]}];const n=60;for(let i=0;i<=n;i++){const t=i/n;pts.push({x:x1+(x2-x1)*t+Math.sin(i*1.7)*0.7,y:y1+(y2-y1)*t+Math.cos(i*2.3)*0.7});}__WCWZ__.spawnFromStrokes([{pts}]);return 1;})()`;
       await evalJs(drawExpr);
       await sleep(200);
-      await evalJs(`__WCWZ__.runtime.setAbility('${c.ability}'); 1`);
+      // 支持多枚能力：关4 弹射板是「变硬 + 怕痒」两枚相乘才成立（认知变量=配对）
+      const abs = Array.isArray(c.ability) ? c.ability : [c.ability];
+      for (const a of abs) await evalJs(`__WCWZ__.runtime.setAbility('${a}'); 1`);
       let status = 'playing';
       let elapsed = 0;
       for (let i = 0; i < 60; i++) {
