@@ -24,8 +24,9 @@ import { canFitBeforeStamp, createLineQuota, estimateSpeechMs, isPerLevelLine, L
 import { LEVEL_CH1_01 } from './level/levels/ch1-01.js';
 import { LEVEL_CH1_02 } from './level/levels/ch1-02.js';
 import { LEVEL_CH1_03 } from './level/levels/ch1-03.js';
+import { LEVEL_CH1_04 } from './level/levels/ch1-04.js';
 
-const GAME_LEVELS = [LEVEL_CH1_01, LEVEL_CH1_02, LEVEL_CH1_03];
+const GAME_LEVELS = [LEVEL_CH1_01, LEVEL_CH1_02, LEVEL_CH1_03, LEVEL_CH1_04];
 const GAME_CHAPTER_KEYS = [
   { rootHz: 293.66, mode: 0 },   // 关1 D 宫
   { rootHz: 293.66, mode: 1 },   // 关2 D 羽
