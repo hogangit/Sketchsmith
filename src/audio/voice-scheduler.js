@@ -82,50 +82,56 @@ export function createVoiceScheduler(o) {
     });
   }
 
-  /** 推进一步：① C5 → ② 只读预检 → ③ C4 → ④ 超时 → ⑤ 起播 */
+  /**
+   * 推进一步：① C5 → ② 只读预检 → ③ C4 → ④ 超时 → ⑤ 起播
+   * 返回六态口径的结果（见文件头的 C.1c）：'started' | 'queued' | 'deferred' | 'blocked' | 'dropped'。
+   * **永远不会返回 'played'**：onstart 是异步的，同步说"已播"是假信息。
+   */
   function pump() {
-    if (playing || !pending) return;
+    if (playing || !pending) return 'queued';       // 有句在播 → 排队等着
     const t = now();
     // ① C5：不在画面内 → 挂起（不扣、不丢）；过窗才作废，作废也不扣
     if (!isOnScreen(pending.speaker)) {
       pending.suspended = true;
-      if (t - pending.enqueuedAt > VOICE_PENDING_TTL_MS) pending = null;
-      return;
+      if (t - pending.enqueuedAt > VOICE_PENDING_TTL_MS) { pending = null; return 'dropped'; }
+      return 'blocked';
     }
     pending.suspended = false;
     // ② 配额只读预检：不够就直接不出队（连 C4 的延后都别做）
-    if (!precheckQuota(pending.lineId)) { pending = null; return; }
+    if (!precheckQuota(pending.lineId)) { pending = null; return 'dropped'; }
     // ③ C4 同音色间隔：延后，不扣
     const last = lastStartAt.get(pending.speaker);
     const notBefore = Math.max(pending.notBefore || 0,
       last == null ? 0 : last + VOICE_SPEAKER_INTERVAL_MS);
-    if (t < notBefore) { pending.notBefore = notBefore; return; }
+    if (t < notBefore) { pending.notBefore = notBefore; return 'deferred'; }
     // ④ 超时整句丢弃：不扣。
     // 计时从"**它本来可以起播**"那一刻算起，不是从入队算起 —— 否则 TTL 与 C4 同为 45s 时，
     // 被 C4 延后的句子会在刚够格的同一刻被判超时，C4 永远不可能成功。
     const eligibleAt = Math.max(pending.enqueuedAt, pending.notBefore || 0);
-    if (t - eligibleAt > VOICE_PENDING_TTL_MS) { pending = null; return; }
-    // ⑤ 起播
+    if (t - eligibleAt > VOICE_PENDING_TTL_MS) { pending = null; return 'dropped'; }
+    // ⑤ 起播（扣费仍只在 backend 的 onStart 里发生）
     const entry = pending;
     pending = null;
     start(entry);
+    return 'started';
   }
 
   const api = {
     /**
-     * 请求播一句。返回 'speaking' | 'queued' | 'rejected'。
+     * 请求播一句。返回 'started' | 'queued' | 'deferred' | 'blocked' | 'dropped'（C.1c 六态的前半段）。
+     * **不会返回 'played'**——真正起播另走 `onSpoken` 回调。
      * **这里不扣费**——扣费只发生在 backend 的 onStart 回调里。
      */
     request({ lineId, text, speaker, level, textMs }) {
       const lv = level || LINE_LEVEL.AMBIENT;
       const make = () => ({ lineId, text, speaker, level: lv, textMs, enqueuedAt: now(), notBefore: 0, suspended: false });
-      if (!pending) { pending = make(); pump(); return playing && playing.lineId === lineId ? 'speaking' : 'queued'; }
+      if (!pending) { pending = make(); return pump(); }
       // 队满：抢占**尚未起播的最低级别**（不扣费）
-      if (!canPreempt(lv)) return 'rejected';            // 不可抢占的句子不许挤掉别人
-      if (!canPreempt(pending.level)) return 'rejected'; // 正在等的不可抢占 → 只能拒新的
+      if (!canPreempt(lv)) return 'dropped';             // 不可抢占的句子不许挤掉别人
+      if (!canPreempt(pending.level)) return 'dropped';  // 正在等的不可抢占 → 只能拒新的
       // 同级别不换（先到先等，避免同级来回颠簸）；只有"新的更重要"才抢占等待位
-      if (pending.level > lv) { pending = make(); pump(); return playing && playing.lineId === lineId ? 'speaking' : 'queued'; }
-      return 'rejected';                                 // 新的不比在等的更重要 → 拒
+      if (pending.level > lv) { pending = make(); return pump(); }
+      return 'dropped';                                  // 新的不比在等的更重要 → 拒
     },
 
     /** C.1b 抢占：只摘队列里尚未起播的，**不扣费** */
