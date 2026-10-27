@@ -2093,16 +2093,32 @@ const ABILITIES = {
           const M = ctx.Matter;
           const other = ctx.otherBody;
           if (!other || other.isStatic) return;
-          // 方向：把接触方推离怕痒体（用分离方向，等价于「沿法线反方向」且不依赖 matter 法线符号）
-          const a = ctx.matterBody.position;
-          const b = other.position;
-          let dx = b.x - a.x, dy = b.y - a.y;
-          const len = Math.hypot(dx, dy) || 1;
-          dx /= len; dy /= len;
-          const k = MATERIALS.TICKLE_K;
+          // ⚠️ TICKLE_K 是**独立导出**，不是 MATERIALS 的成员：写成 MATERIALS.TICKLE_K 会拿到
+          // undefined ⇒ 冲量算成 NaN ⇒ 整局物理在第 118 帧炸掉（探针实测 nanF=118 的根因）。
+          const k = TICKLE_K;
+          let nx, ny;
+          const n = ctx.normal;
+          if (n && Number.isFinite(n.x) && Number.isFinite(n.y) && (n.x !== 0 || n.y !== 0)) {
+            // 优先用**接触法线**：小人站在板顶面上时法线垂直向上 ⇒ 被垂直弹起。
+            // 不能用两体连心线：板很宽、小人站在端点时连心线几乎水平，会把小人**往左推、
+            // 推离高台**（探针实测 dx,dy = -35.3, -19.8，斜向左上，就是这条旧逻辑）。
+            nx = n.x; ny = n.y;
+            // 符号校正：法线必须指向「把 other 推离怕痒体」的那一侧（matter 法线符号不定）
+            const sepX = other.position.x - ctx.matterBody.position.x;
+            const sepY = other.position.y - ctx.matterBody.position.y;
+            if (nx * sepX + ny * sepY < 0) { nx = -nx; ny = -ny; }
+          } else {
+            // 退化：拿不到法线时用两体分离方向（保底，不新增失败模式）
+            nx = other.position.x - ctx.matterBody.position.x;
+            ny = other.position.y - ctx.matterBody.position.y;
+          }
+          const len = Math.hypot(nx, ny);
+          if (!(len > 0)) return;            // 完全重合：什么都不做，绝不写 NaN
+          if (!Number.isFinite(k)) return;   // 常量缺失时不许污染速度（NaN 守卫）
+          nx /= len; ny /= len;
           M.Body.setVelocity(other, {
-            x: other.velocity.x + dx * k,
-            y: other.velocity.y + dy * k,
+            x: other.velocity.x + nx * k,
+            y: other.velocity.y + ny * k,
           });
         },
       },
