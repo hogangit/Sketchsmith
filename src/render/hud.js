@@ -66,7 +66,11 @@ export function drawHud(ctx, view) {
   ctx.fillText(snap.title || view.level.title, 20, 30);
   ctx.fillStyle = '#7a6f5e';
   ctx.font = '11px system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif';
-  ctx.fillText('第 ' + (view.levelIndex + 1) + ' 关 / 3　' + (view.level.subtitle || ''), 20, 48);
+  // 沙盒没有关号、也没有「过关」这回事 ⇒ 不显示「第 N 关」，只显示「造物园」
+  const headLabel = (view.level && view.level.id === 'sandbox')
+    ? '造物园'
+    : ('第 ' + (view.levelIndex + 1) + ' 关 / ' + (view.totalLevels || 5));
+  ctx.fillText(headLabel + '　' + (view.level.subtitle || ''), 20, 48);
 
   const armed = snap.armedAbilities || [];
   for (let i = 0; i < chips.length && i < 4; i++) {
@@ -153,11 +157,12 @@ export function drawHud(ctx, view) {
     ctx.fillRect(0, 0, DESIGN_W, DESIGN_H);
     ctx.fillStyle = '#f7f2e4';
     ctx.font = '700 34px system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif';
-    const title = view.levelIndex >= 2 ? '第一章 · 过完了' : '过关';
+    const isLast = view.levelIndex >= ((view.totalLevels || 3) - 1);
+    const title = isLast ? '第一章 · 过完了' : '过关';
     const tw = ctx.measureText(title).width;
     ctx.fillText(title, (DESIGN_W - tw) / 2, 400);
     ctx.font = '14px system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif';
-    const sub = view.levelIndex >= 2 ? '点一下重玩第 1 关（本轮只做 3 关）' : '点一下继续';
+    const sub = isLast ? '点一下进造物园（想造什么就造什么）' : '点一下继续';
     const sw = ctx.measureText(sub).width;
     ctx.fillStyle = 'rgba(247,242,228,0.75)';
     ctx.fillText(sub, (DESIGN_W - sw) / 2, 434);

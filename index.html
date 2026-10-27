@@ -756,7 +756,11 @@ function drawHud(ctx, view) {
   ctx.fillText(snap.title || view.level.title, 20, 30);
   ctx.fillStyle = '#7a6f5e';
   ctx.font = '11px system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif';
-  ctx.fillText('第 ' + (view.levelIndex + 1) + ' 关 / 3　' + (view.level.subtitle || ''), 20, 48);
+  // 沙盒没有关号、也没有「过关」这回事 ⇒ 不显示「第 N 关」，只显示「造物园」
+  const headLabel = (view.level && view.level.id === 'sandbox')
+    ? '造物园'
+    : ('第 ' + (view.levelIndex + 1) + ' 关 / ' + (view.totalLevels || 5));
+  ctx.fillText(headLabel + '　' + (view.level.subtitle || ''), 20, 48);
 
   const armed = snap.armedAbilities || [];
   for (let i = 0; i < chips.length && i < 4; i++) {
@@ -843,11 +847,12 @@ function drawHud(ctx, view) {
     ctx.fillRect(0, 0, DESIGN_W, DESIGN_H);
     ctx.fillStyle = '#f7f2e4';
     ctx.font = '700 34px system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif';
-    const title = view.levelIndex >= 2 ? '第一章 · 过完了' : '过关';
+    const isLast = view.levelIndex >= ((view.totalLevels || 3) - 1);
+    const title = isLast ? '第一章 · 过完了' : '过关';
     const tw = ctx.measureText(title).width;
     ctx.fillText(title, (DESIGN_W - tw) / 2, 400);
     ctx.font = '14px system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif';
-    const sub = view.levelIndex >= 2 ? '点一下重玩第 1 关（本轮只做 3 关）' : '点一下继续';
+    const sub = isLast ? '点一下进造物园（想造什么就造什么）' : '点一下继续';
     const sw = ctx.measureText(sub).width;
     ctx.fillStyle = 'rgba(247,242,228,0.75)';
     ctx.fillText(sub, (DESIGN_W - sw) / 2, 434);
@@ -3649,6 +3654,13 @@ const LINES = {
   l5_intro: { who: '小人', text: '河里有鱼。它爱顶人。' },
   l5_win: { who: '小人', text: '我过来了。谢谢桥。' },
   l5_fish: { who: '鱼', text: '我顶了个寂寞。' },
+  // 沙盒「造物园」：开场一句（迎宾，走开场时机）+ 四条落地吐槽。
+  // sb_toss* 一律**纯文字、不朗读**，且风格对齐「角色只自嘲、不评价玩家的画」。
+  sb_intro: { who: '小人', text: '这里归你了。造吧。' },
+  sb_toss1: { who: '小人', text: '你又造了个我。我谢谢你。' },
+  sb_toss2: { who: '小人', text: '这玩意儿比上次的还圆。' },
+  sb_toss3: { who: '小人', text: '它落地了。它自己也吓一跳。' },
+  sb_toss4: { who: '小人', text: '又一个。我不问它是干嘛的。' },
   // levels.md 附录 A「落地形状分岔台词」6 条**闭集**，表外不许自拟；同句整局最多 2 次，超额静默
   form_beam: { who: '农夫', text: '这东西能踩吗？' },
   form_wheel: { who: '农夫', text: '圆的。它会自己跑。' },
@@ -4098,6 +4110,110 @@ const LEVEL_CH1_05 = {
   ],
 };
 ;
+/* src/level/sandbox.js */
+/**
+ * src/level/sandbox.js —— 沙盒「造物园」（通关 5 关后解锁，D1：沙盒作为全通奖励）
+ *
+ * 承接「主角可以造出天地万物」的核心承诺：**无过关判定、无失败、无计时**。
+ *
+ * ── 为什么 `goal: null` 是关键（验收判据 3：无 goal 不误判）────────────────
+ *   沙盒场景**不带 goal**。runtime 的 `checkGoal` 在 `goal == null` 时必须直接返回，
+ *   于是永不 `win`、永不 `fail` —— 玩家想画多久画多久，系统不许替他宣布"过了"。
+ *   这一条本身要有测试（规格 3.6 `sandbox-nogoal`），不许只在文档里写"没有目标"。
+ *
+ * ── 与关卡的区别 ────────────────────────────────────────────────────────
+ *   · chips = **全部已实装能力**（不是每关轮换的 4~5 枚），每造物仍 ≤2（全局上限不变）
+ *   · 造物**持久化**到 `wcwz:sandbox:v1`（沿用 SaveStore 抽象，与关卡通关进度同一套）
+ *   · 上限 30 个，超了提示「先删掉旧的」，**不静默丢弃**（同 D25/D26：不抹掉玩家成果）
+ */
+
+
+/** 存档 key（规格 3.4） */
+const SANDBOX_KEY = 'wcwz:sandbox:v1';
+/** 造物上限（规格 3.4）：超出提示，不静默丢 */
+const SANDBOX_MAX_CREATURES = 30;
+
+const SANDBOX_LEVEL = {
+  id: 'sandbox',
+  chapter: 1,
+  title: '造物园',
+  subtitle: '想造什么，就造什么。',
+  // 全部已实装能力都可用（造物仍受「每造物 ≤2 枚」全局上限约束）
+  chips: [...IMPLEMENTED_ABILITY_IDS],
+  spawnY: 84,
+  terrain: [
+    { x: 215, y: 471, w: 430, h: 82, mat: 'ground' },   // 一整块地台：x 0..430，顶面 430
+  ],
+  actors: [],
+  props: [],
+  plates: [],
+  goal: null,               // ★ 沙盒没有目标：永不 win / 永不 fail
+  resetActorIfBelowY: null,
+  guides: [],
+  hints: { highlight: [], beamOutline: null },
+  scenery: [
+    { kind: 'hills' },
+    { kind: 'line', x1: 0, y1: 430, x2: 430, y2: 430, width: 2.5 },
+    { kind: 'crops', x1: 24, x2: 60, y: 430, n: 3, h: 9 },
+    { kind: 'crops', x1: 360, x2: 404, y: 430, n: 3, h: 10 },
+    { kind: 'text', x: 215, y: 268, text: '造物园', size: 12, align: 'center' },
+    { kind: 'text', x: 215, y: 292, text: '画什么都会留下', size: 10, align: 'center', tone: 'light' },
+  ],
+  lines: {
+    intro: 'sb_intro',
+    win: null,        // 沙盒没有"赢"，这个槽位必须是空（闭集断言会放过 null）
+    failStreak: null,
+    stamp: null,
+  },
+  failHints: [],
+};
+
+/**
+ * 读沙盒存档（没有就给一个空壳，不阻塞启动）。
+ * @param {{read:(k:string)=>any, write:(k:string,v:any)=>void}} store SaveStore 抽象
+ */
+function loadSandbox(store) {
+  const v = store && store.read ? store.read(SANDBOX_KEY) : null;
+  if (!v || typeof v !== 'object') return { unlocked: false, creatures: [] };
+  return {
+    unlocked: !!v.unlocked,
+    creatures: Array.isArray(v.creatures) ? v.creatures : [],
+  };
+}
+
+/**
+ * 存一个造物。返回 `{ ok, reason }`：
+ *  - `ok:false, reason:'full'` 表示已达上限（调用方应提示「先删掉旧的」，**不静默丢**）。
+ * @returns {{ok:boolean, reason?:string, count:number}}
+ */
+function saveCreature(store, creature) {
+  const cur = loadSandbox(store);
+  if (cur.creatures.length >= SANDBOX_MAX_CREATURES) {
+    return { ok: false, reason: 'full', count: cur.creatures.length };
+  }
+  const rec = {
+    id: creature.id || `c${Date.now()}`,
+    form: creature.form || null,
+    thickness: creature.thickness == null ? null : creature.thickness,
+    abilities: Array.isArray(creature.abilities) ? creature.abilities.slice(0, 2) : [],
+    name: creature.name || '',
+    x: creature.x, y: creature.y,
+    createdAt: Date.now(),
+  };
+  const next = { unlocked: true, creatures: cur.creatures.concat([rec]) };
+  if (store && store.write) store.write(SANDBOX_KEY, next);
+  return { ok: true, count: next.creatures.length };
+}
+
+/** 标记沙盒已解锁（通关第 5 关那一刻调用） */
+function unlockSandbox(store) {
+  const cur = loadSandbox(store);
+  if (cur.unlocked) return cur;
+  const next = { unlocked: true, creatures: cur.creatures };
+  if (store && store.write) store.write(SANDBOX_KEY, next);
+  return next;
+}
+;
 /* src/main.js */
 /**
  * src/main.js —— 组合根（composition root）：把平台实现、物理、渲染、音频、关卡装配成一局游戏。
@@ -4128,7 +4244,12 @@ const LEVEL_CH1_05 = {
 
 
 
-const GAME_LEVELS = [LEVEL_CH1_01, LEVEL_CH1_02, LEVEL_CH1_03, LEVEL_CH1_04, LEVEL_CH1_05];
+
+// 沙盒挂在数组末尾：通关最后一关后 nextLevel 会自然推进到它，不另开一套模式切换。
+// ⚠️ 因此「最后一关」永远是 GAME_LEVELS.length - 2（沙盒不算关）。
+const GAME_LEVELS = [LEVEL_CH1_01, LEVEL_CH1_02, LEVEL_CH1_03, LEVEL_CH1_04, LEVEL_CH1_05, SANDBOX_LEVEL];
+/** 真正的最后一关下标（章节印章 / 沙盒解锁都以它为界） */
+const LAST_LEVEL_INDEX = GAME_LEVELS.length - 2;
 const GAME_CHAPTER_KEYS = [
   { rootHz: 293.66, mode: 0 },   // 关1 D 宫
   { rootHz: 293.66, mode: 1 },   // 关2 D 羽
@@ -4157,6 +4278,7 @@ function boot() {
 
   const view = {
     levelIndex: 0,
+    totalLevels: GAME_LEVELS.length - 1,   // 真实关卡数（不含挂在末尾的沙盒）
     level: GAME_LEVELS[0],
     snapshot: null,
     debug: mainParam('debug'),
@@ -4340,6 +4462,8 @@ function boot() {
     progress.maxUnlocked = Math.max(progress.maxUnlocked, Math.min(GAME_LEVELS.length, view.levelIndex + 2));
     progress.seconds = (progress.seconds || 0) + Math.round((payload.elapsedMs || 0) / 1000);
     saveProgress(store, progress);
+    // 通关真正的最后一关 ⇒ 解锁沙盒「造物园」（D1：沙盒作为全通奖励）
+    if (view.levelIndex === LAST_LEVEL_INDEX) unlockSandbox(store);
     // 首次成功句：绑在【成功这一刻】（D8-A1），不是定时器连播
     const winLine = lineText(lv.lines.win);
     const stampAt = view.levelIndex === 0 ? 3200 : 1400;
@@ -4355,7 +4479,7 @@ function boot() {
       say(lv.lines.win, 2600);
       setTimeout(() => {
         AudioBus.play('stamp');
-        if (view.levelIndex === GAME_LEVELS.length - 1) say('stamp1', 2600);
+        if (view.levelIndex === LAST_LEVEL_INDEX) say('stamp1', 2600);
       }, stampAt);
     }
     winTimer = setTimeout(() => { winTimer = 0; }, 600);

@@ -26,8 +26,13 @@ import { LEVEL_CH1_02 } from './level/levels/ch1-02.js';
 import { LEVEL_CH1_03 } from './level/levels/ch1-03.js';
 import { LEVEL_CH1_04 } from './level/levels/ch1-04.js';
 import { LEVEL_CH1_05 } from './level/levels/ch1-05.js';
+import { SANDBOX_LEVEL, unlockSandbox } from './level/sandbox.js';
 
-const GAME_LEVELS = [LEVEL_CH1_01, LEVEL_CH1_02, LEVEL_CH1_03, LEVEL_CH1_04, LEVEL_CH1_05];
+// 沙盒挂在数组末尾：通关最后一关后 nextLevel 会自然推进到它，不另开一套模式切换。
+// ⚠️ 因此「最后一关」永远是 GAME_LEVELS.length - 2（沙盒不算关）。
+const GAME_LEVELS = [LEVEL_CH1_01, LEVEL_CH1_02, LEVEL_CH1_03, LEVEL_CH1_04, LEVEL_CH1_05, SANDBOX_LEVEL];
+/** 真正的最后一关下标（章节印章 / 沙盒解锁都以它为界） */
+const LAST_LEVEL_INDEX = GAME_LEVELS.length - 2;
 const GAME_CHAPTER_KEYS = [
   { rootHz: 293.66, mode: 0 },   // 关1 D 宫
   { rootHz: 293.66, mode: 1 },   // 关2 D 羽
@@ -56,6 +61,7 @@ export function boot() {
 
   const view = {
     levelIndex: 0,
+    totalLevels: GAME_LEVELS.length - 1,   // 真实关卡数（不含挂在末尾的沙盒）
     level: GAME_LEVELS[0],
     snapshot: null,
     debug: mainParam('debug'),
@@ -239,6 +245,8 @@ export function boot() {
     progress.maxUnlocked = Math.max(progress.maxUnlocked, Math.min(GAME_LEVELS.length, view.levelIndex + 2));
     progress.seconds = (progress.seconds || 0) + Math.round((payload.elapsedMs || 0) / 1000);
     saveProgress(store, progress);
+    // 通关真正的最后一关 ⇒ 解锁沙盒「造物园」（D1：沙盒作为全通奖励）
+    if (view.levelIndex === LAST_LEVEL_INDEX) unlockSandbox(store);
     // 首次成功句：绑在【成功这一刻】（D8-A1），不是定时器连播
     const winLine = lineText(lv.lines.win);
     const stampAt = view.levelIndex === 0 ? 3200 : 1400;
@@ -254,7 +262,7 @@ export function boot() {
       say(lv.lines.win, 2600);
       setTimeout(() => {
         AudioBus.play('stamp');
-        if (view.levelIndex === GAME_LEVELS.length - 1) say('stamp1', 2600);
+        if (view.levelIndex === LAST_LEVEL_INDEX) say('stamp1', 2600);
       }, stampAt);
     }
     winTimer = setTimeout(() => { winTimer = 0; }, 600);
