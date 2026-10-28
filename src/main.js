@@ -13,6 +13,7 @@ import { createLocalStorageSaveStore } from './platform/local-storage-save-store
 import { createCanvasSurface, createStaticLayer } from './render/canvas.js';
 import { drawFarmer, drawFreehandStroke, drawPaper } from './render/handdrawn.js';
 import { drawSoilTexture, drawSoilTufts, drawPaperGrain, drawSceneVignette } from './render/scenery.js';
+import { drawTitleCard } from './render/title-card.js';
 import { chipIndexAt, drawHud, headerButtonAt, pickFailHint } from './render/hud.js';
 import { createStrokeCapture } from './stroke/capture.js';
 import { analyzeStrokeGroup } from './stroke/classify.js';
@@ -41,6 +42,9 @@ const GAME_CHAPTER_KEYS = [
 ];
 const MAIN_THICKNESS = 9;
 const MAIN_FRAME_CLAMP_MS = 50;
+/** 开场扉页：静止展示 + 淡出（合计 1.63s）。点一下提前进入淡出，不硬切 */
+const INTRO_HOLD_MS = 1250;
+const INTRO_FADE_MS = 380;
 
 function mainNow() {
   return (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
@@ -94,6 +98,17 @@ export function boot() {
   let sceneSeed = 1;
   let lastBubbleKey = '';
   let winTimer = 0;
+
+  // 开场扉页：introActive 期间冻结物理——「点一下就开始」要名副其实，
+  // 否则玩家还在看扉页，小人已经自己开走了。
+  let introActive = !Boot.introSkipped;
+  let introT0 = mainNow();
+  let introLineSaid = false;
+  /** 结束扉页：跳到淡出段起点（不硬切，也不让玩家觉得点了没反应） */
+  function endIntro() {
+    if (!introActive) return;
+    introT0 = Math.min(introT0, mainNow() - INTRO_HOLD_MS);
+  }
 
   /** 把一句台词交给"交付"：气泡一定出现（文字是信息通道），语音能不能起来由音频层决定 */
   function showLine(lineId, ms) {
@@ -330,6 +345,9 @@ export function boot() {
       view.audioUnlocked = AudioBus.unlocked;
       view.voiceMode = AudioBus.voiceMode;
     }
+    // 扉页期间：这一下只算「开始」，不落到画笔上——否则第一笔会画在看不见的地方，
+    // 玩家以为没反应，其实已经落了一个造物。解锁音频仍走上面的同步路径（iOS 要求）。
+    if (introActive) { endIntro(); ev.preventDefault(); return; }
     const p = surface.toDesign(ev.clientX, ev.clientY);
     if (handleUiTap(p.x, p.y)) { ev.preventDefault(); return; }
     try { canvasEl.setPointerCapture(ev.pointerId); } catch (e) { /* noop */ }
@@ -656,8 +674,15 @@ export function boot() {
     accum += Math.min(MAIN_FRAME_CLAMP_MS, dt);
     const steps = Math.floor(accum / 16.666);
     accum -= steps * 16.666;
+    // 扉页生命周期：到点自动结束；结束后补说开场句（若已跳过则第一帧就说）
+    if (introActive && t - introT0 >= INTRO_HOLD_MS + INTRO_FADE_MS) introActive = false;
+    if (!introActive && !introLineSaid && runtime) {
+      introLineSaid = true;
+      say(view.level.lines.intro, 3200);   // 开场句：扉页落下那一刻，仅一句
+    }
     const physStart = mainNow();
-    if (runtime && view.win === false) runtime.step(Math.max(0, Math.min(3, steps)));
+    if (runtime && introActive) { /* 扉页期间冻结物理 */ }
+    else if (runtime && view.win === false) runtime.step(Math.max(0, Math.min(3, steps)));
     else if (runtime && steps > 0) runtime.step(0);
     const physMs = mainNow() - physStart;
     if (view.win && steps > 0 && !winTimer) { /* 过关后不再推进物理 */ }
@@ -678,13 +703,20 @@ export function boot() {
     drawBodies(ctx);
     drawBook(ctx);
     drawHud(ctx, view);
+    // 扉页画在最后一层：它要盖住 HUD，否则开场时芯片/进度条会和标题抢读
+    if (introActive) {
+      const el = t - introT0;
+      const a = el <= INTRO_HOLD_MS ? 1 : Math.max(0, 1 - (el - INTRO_HOLD_MS) / INTRO_FADE_MS);
+      drawTitleCard(ctx, { alpha: a, now: t });
+    }
     surface.endFrame();
     requestAnimationFrame(frame);
   }
 
   buildWorld();
   requestAnimationFrame(frame);
-  setTimeout(() => { say(view.level.lines.intro, 3200); }, 240);   // 开场句：进关那一刻，仅一句
+  // 开场句不在这里播：改由 frame 在扉页落下的那一刻说（introLineSaid），
+  // 否则台词会在扉页还盖着屏幕时念完，玩家只听见声音看不到人。
 
   return {
     view, bus, surface, store, progress,
@@ -692,6 +724,7 @@ export function boot() {
     get world() { return world; },
     capture,
     retryLevel, nextLevel,
+    skipIntro: endIntro,
     version: APP_VERSION,
     schema: SAVE_SCHEMA_VERSION,
     key: SAVE_KEY_PROGRESS,

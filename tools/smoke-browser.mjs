@@ -99,7 +99,7 @@ async function main() {
 
     const fileUrl = pathToFileURL(path.join(ROOT, 'dist', 'game.html')).href;
     await cdp.send('Page.navigate', { url: fileUrl });
-    await sleep(1500);
+    await sleep(900);
 
     const evalJs = async (expr) => {
       const r = await cdp.send('Runtime.evaluate', { expression: expr, returnByValue: true, awaitPromise: true });
@@ -114,6 +114,23 @@ async function main() {
 
     const boot = await evalJs('JSON.stringify({v:__WCWZ__.version, level:__WCWZ__.view.level.title, bookTop:513, h:window.innerHeight, w:window.innerWidth, canvasTop:__WCWZ__.surface.canvas.getBoundingClientRect().top})');
     console.log('[smoke] 启动 OK ' + boot);
+
+    // 扉页截图：900ms 时还在静止展示段（1250ms 后才开始淡出），截到的是完整封面
+    const coverShot = await cdp.send('Page.captureScreenshot', { format: 'png' });
+    fs.writeFileSync(path.join(ROOT, 'dist', 'smoke-title.png'), Buffer.from(coverShot.data, 'base64'));
+
+    // 后续是玩法测试，不测扉页：跳过它，否则前 1.6s 物理被冻结，会拖长每关计时
+    await evalJs('try{__WCWZ__.skipIntro();}catch(e){}; 1');
+    await sleep(460);   // 等淡出走完，关卡截图不带遮罩
+
+    // 扉页把开场句的播放时机推后了（原本 build 后 240ms 就说），必须证明它没被吞：
+    // 判据是「气泡真的出现了且非空」，不是「setTimeout 被调用过」。
+    const bub = await evalJs('JSON.stringify(__WCWZ__.view.bubble||null)');
+    if (!bub || bub === 'null' || !JSON.parse(bub).text) {
+      failures.push('扉页落下后开场句未出现（view.bubble 为空）');
+    } else {
+      console.log('[smoke] 扉页落下后开场句 → ' + JSON.parse(bub).text);
+    }
 
     for (const c of CASES) {
       await evalJs(`__WCWZ__.view.levelIndex=${c.level}; __WCWZ__.retryLevel(); 1`);

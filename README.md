@@ -17,6 +17,9 @@ node tools/build.mjs                 # 生成 dist/game.html + 根目录 index.h
 ```
 
 - **玩**：双击 `dist/game.html`（或根目录 `index.html`）。不需要服务器、不需要联网。
+  打开先见一页**开场扉页**（中文《我是造物主》为主视觉、`SKETCHSMITH` 作副行），
+  点一下即可开始，1.6 秒后也会自动淡出；扉页期间物理冻结，不会「人还没出场就先掉坑里」。
+  想跳过：URL 加 `?skipIntro=1`，或控制台 `__WCWZ__.skipIntro()`。
 - **自测（真浏览器，无需 npm 依赖）**：
   ```bash
   node tools/smoke-browser.mjs       # Edge headless + CDP：430×932，三关各用参考解法真的走通
