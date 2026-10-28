@@ -6,6 +6,7 @@
  *   · 调试 HUD 做成右上角半透明小块，不与主角区域重叠
  */
 import { BOOK_TOP, DESIGN_H, DESIGN_W } from '../core/config.js';
+import { RenderQuality } from '../core/perf.js';
 
 const HUD_CHIP_W = 66;
 const HUD_CHIP_H = 34;
@@ -16,6 +17,43 @@ const HUD_PAD = 12;
 const ABILITY_LABELS = {
   harden: '变硬', roll: '会滚', heavy: '变重', light: '变轻', tickle: '怕痒',
 };
+
+/**
+ * 手绘感圆角矩形路径（art-polish 3.5）：四边各带 ±0.45px 的**确定性**微抖。
+ * 确定性是硬要求：芯片每帧重画，抖动若随机，芯片会整帧"跳舞"。
+ * seed 由调用方传（建议 chip index），同一枚芯片每帧笔迹一致。
+ */
+function wobblyRectPath(ctx, x, y, w, h, r, seed) {
+  let s = (seed * 2654435761 + 1) >>> 0;
+  const j = () => {
+    s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
+    return (s / 4294967296 - 0.5) * 0.9;
+  };
+  ctx.moveTo(x + r + j(), y + j());
+  ctx.lineTo(x + w - r + j(), y + j());
+  ctx.quadraticCurveTo(x + w + j(), y + j(), x + w + j(), y + r + j());
+  ctx.lineTo(x + w + j(), y + h - r + j());
+  ctx.quadraticCurveTo(x + w + j(), y + h + j(), x + w - r + j(), y + h + j());
+  ctx.lineTo(x + r + j(), y + h + j());
+  ctx.quadraticCurveTo(x + j(), y + h + j(), x + j(), y + h - r + j());
+  ctx.lineTo(x + j(), y + r + j());
+  ctx.quadraticCurveTo(x + j(), y + j(), x + r + j(), y + j());
+  ctx.closePath();
+}
+
+/** 选中下划线（R3 第二通道）：3 段抖动横线——灰化后不靠颜色也认得出选中 */
+function wobblyUnderline(ctx, x, y, w, seed) {
+  let s = (seed * 40503 + 7) >>> 0;
+  const j = () => {
+    s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
+    return (s / 4294967296 - 0.5) * 0.8;
+  };
+  const segW = w / 3;
+  for (let i = 0; i < 3; i++) {
+    ctx.moveTo(x + i * segW + j(), y + j());
+    ctx.lineTo(x + (i + 1) * segW - 1.5 + j(), y + j());
+  }
+}
 
 /** 芯片按「右对齐、与标题同行」排布；n 由当前关卡芯片数决定 */
 export function chipRect(i, n) {
@@ -86,22 +124,60 @@ export function drawHud(ctx, view) {
     const id = chips[i];
     const on = armed.indexOf(id) >= 0;
     ctx.fillStyle = on ? '#3f6b4f' : 'rgba(246,241,227,0.95)';
-    roundRect(ctx, r.x, r.y, r.w, r.h, 9);
+    ctx.beginPath();
+    wobblyRectPath(ctx, r.x, r.y, r.w, r.h, 9, i + 1);
     ctx.fill();
     ctx.strokeStyle = on ? '#2c4a37' : 'rgba(90,80,64,0.55)';
     ctx.lineWidth = 1.5;
     ctx.stroke();
+    // 手绘双趟（art-polish 3.5）：第二趟偏移 0.6px、alpha 减半；low 档省掉
+    if (RenderQuality.tier !== 'low') {
+      ctx.save();
+      ctx.globalAlpha = 0.45;
+      ctx.translate(0.6, 0.5);
+      ctx.beginPath();
+      wobblyRectPath(ctx, r.x, r.y, r.w, r.h, 9, i + 7);
+      ctx.stroke();
+      ctx.restore();
+    }
+    // R3 第二通道：选中态除颜色外叠加「下划线 3 段 + 右上小勾」，灰化后仅凭形状可辨
+    if (on) {
+      ctx.strokeStyle = '#2c4a37';
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      wobblyUnderline(ctx, r.x + 9, r.y + 27, r.w - 22, i + 3);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(r.x + r.w - 13, r.y + 11);
+      ctx.lineTo(r.x + r.w - 9.5, r.y + 14);
+      ctx.lineTo(r.x + r.w - 4.5, r.y + 6);
+      ctx.stroke();
+    }
     ctx.fillStyle = on ? '#f4efe2' : '#3a352c';
     ctx.font = '600 14px system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif';
     ctx.fillText(ABILITY_LABELS[id] || id, r.x + 11, r.y + 22);
   }
 
-  // 重来 / 声 / 关于：标题行下方，不与场景争位置
-  ctx.strokeStyle = 'rgba(90,80,64,0.45)';
-  ctx.lineWidth = 1.3;
-  roundRect(ctx, DESIGN_W - 150, 54, 50, 34, 8); ctx.stroke();
-  roundRect(ctx, DESIGN_W - 96, 54, 46, 34, 8); ctx.stroke();
-  roundRect(ctx, DESIGN_W - 46, 54, 36, 34, 8); ctx.stroke();
+  // 重来 / 声 / 关于：标题行下方，不与场景争位置；与芯片同一手绘语言（双趟抖动）
+  const drawWobblyBtn = (x, w, seed) => {
+    ctx.strokeStyle = 'rgba(90,80,64,0.45)';
+    ctx.lineWidth = 1.3;
+    ctx.beginPath();
+    wobblyRectPath(ctx, x, 54, w, 34, 8, seed);
+    ctx.stroke();
+    if (RenderQuality.tier !== 'low') {
+      ctx.save();
+      ctx.globalAlpha = 0.45;
+      ctx.translate(0.6, 0.5);
+      ctx.beginPath();
+      wobblyRectPath(ctx, x, 54, w, 34, 8, seed + 11);
+      ctx.stroke();
+      ctx.restore();
+    }
+  };
+  drawWobblyBtn(DESIGN_W - 150, 50, 21);
+  drawWobblyBtn(DESIGN_W - 96, 46, 22);
+  drawWobblyBtn(DESIGN_W - 46, 36, 23);
   ctx.fillStyle = '#5d5446';
   ctx.font = '12px system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif';
   ctx.fillText('关于', DESIGN_W - 137, 76);

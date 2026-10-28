@@ -67,6 +67,9 @@ export function boot() {
   const bus = createBus();
   const surface = createCanvasSurface(canvasEl);
   const staticLayer = createStaticLayer();
+  // 造物簿纸面烘焙层（art-polish 3.4）：drawPaper 原来每帧 ~25 次 path，现在关卡切换画一次。
+  // 内容与关卡无关（每关同一张纸），因此永不 invalidate。
+  const paperLayer = createStaticLayer();
   const store = createLocalStorageSaveStore();
   const progress = loadProgress(store);
 
@@ -722,13 +725,54 @@ export function boot() {
   }
 
   function drawBook(ctx) {
-    drawPaper(ctx, 0, BOOK_TOP, DESIGN_W, BOOK_H);
+    // 纸底已由 paperLayer 烘焙（见 frame），这里只画笔迹（art-polish 3.4）
     // 已落笔的笔画
     for (const s of capture.strokes) drawFreehandStroke(ctx, s.pts, 5);
     const live = capture.live;
     if (live && live.length) drawFreehandStroke(ctx, live, 5);
     view.livePoints = capture.pointCount + (live ? live.length : 0);
     view.strokeCount = capture.strokes.length + (live ? 1 : 0);
+  }
+
+  /** 造物簿纸面烘焙（art-polish 3.4）：drawPaper + 质感追加，只跑一次 */
+  function drawPaperBake(ctx) {
+    drawPaper(ctx, 0, BOOK_TOP, DESIGN_W, BOOK_H);
+    ctx.save();
+    // ① 顶部微亮→底部微暖的竖向 wash（半透明叠加，不盖格线）
+    const wash = ctx.createLinearGradient(0, BOOK_TOP, 0, DESIGN_H);
+    wash.addColorStop(0, 'rgba(248,244,232,0.5)');
+    wash.addColorStop(1, 'rgba(244,238,223,0.5)');
+    ctx.fillStyle = wash;
+    ctx.fillRect(0, BOOK_TOP, DESIGN_W, BOOK_H);
+    // ② 页眉撕口/毛边：顶边一排极短墨点（P5）
+    ctx.fillStyle = 'rgba(90,80,64,0.35)';
+    const rng = mulberry32(20261028);
+    for (let i = 0; i < 9; i++) {
+      const gx = 14 + (DESIGN_W - 28) * (i / 8) + (rng() - 0.5) * 10;
+      ctx.fillRect(gx, BOOK_TOP + 2.5, 2.5 + rng() * 2, 1);
+    }
+    // ③ 旧墨渍 2 处：贴非书写区（左下/右下角），不压正文
+    ctx.fillStyle = 'rgba(150,96,74,0.05)';
+    ctx.beginPath(); ctx.arc(46, DESIGN_H - 60, 30, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(DESIGN_W - 60, DESIGN_H - 140, 22, 0, Math.PI * 2); ctx.fill();
+    // ④ 书页与场景分隔：BOOK_TOP 处 6px 内投影（场景的边落在纸上）
+    const inset = ctx.createLinearGradient(0, BOOK_TOP, 0, BOOK_TOP + 6);
+    inset.addColorStop(0, 'rgba(90,80,64,0.10)');
+    inset.addColorStop(1, 'rgba(90,80,64,0)');
+    ctx.fillStyle = inset;
+    ctx.fillRect(0, BOOK_TOP, DESIGN_W, 6);
+    ctx.restore();
+  }
+
+  /** 确定性 PRNG（局部用；与 scenery.js 的 mulberry32 同实现，避免跨模块导出私有辅助） */
+  function mulberry32(seed) {
+    let a = seed >>> 0;
+    return function () {
+      a = (a + 0x6D2B79F5) | 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
   }
 
   // ---- 主循环 ----
@@ -769,6 +813,8 @@ export function boot() {
     const ctx = surface.ctx;
     staticLayer.ensure(drawStatics);
     staticLayer.blit(ctx);
+    paperLayer.ensure(drawPaperBake);   // 与关卡无关，第一次后命中缓存直接 blit
+    paperLayer.blit(ctx);
     drawBodies(ctx, t);
     // 动态布景（风/水光/涟漪/旗摆/芦苇摆）夹在造物与造物簿之间：
     // 它在造物之上（水光能盖住造物边缘，读起来才像"泡在水里"），但绝不越界进造物簿。

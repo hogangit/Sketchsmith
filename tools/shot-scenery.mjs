@@ -63,7 +63,9 @@ async function main() {
     await send('Page.navigate', { url: fileUrl });
     await sleep(1300);
 
-    for (const idx of [0, 1, 2]) {
+    // 命令行参数：node tools/shot-scenery.mjs 4 → 只截 L5；缺省截 L1-L3
+    const levels = process.argv[2] != null ? [Number(process.argv[2])] : [0, 1, 2];
+    for (const idx of levels) {
       if (idx > 0) {
         await evalJs(`__WCWZ__.view.levelIndex=${idx}; __WCWZ__.retryLevel(); 1`);
         await sleep(700);
