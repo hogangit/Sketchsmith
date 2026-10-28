@@ -87,6 +87,9 @@ export function headerButtonAt(x, y) {
   if (x > DESIGN_W - 46 && x < DESIGN_W - 10) return 'audio';
   if (x > DESIGN_W - 96 && x < DESIGN_W - 50) return 'retry';
   if (x > DESIGN_W - 152 && x < DESIGN_W - 100) return 'about';
+  // 沙盒「清空」：只在沙盒里画（见 drawHud），命中区却无条件存在——
+  // 是否生效由 main.js 的 handleUiTap 按 inSandbox() 判，HUD 不该知道玩法规则。
+  if (x > DESIGN_W - 204 && x < DESIGN_W - 154) return 'clear';
   return null;
 }
 
@@ -178,11 +181,27 @@ export function drawHud(ctx, view) {
   drawWobblyBtn(DESIGN_W - 150, 50, 21);
   drawWobblyBtn(DESIGN_W - 96, 46, 22);
   drawWobblyBtn(DESIGN_W - 46, 36, 23);
+  // 沙盒独占的「清空」：造物满 30 后玩家必须能腾地方，否则存档上限就是一条死路
+  const inSandbox = !!(view.level && view.level.id === 'sandbox');
+  if (inSandbox) drawWobblyBtn(DESIGN_W - 204, 50, 24);
   ctx.fillStyle = '#5d5446';
   ctx.font = '12px system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif';
   ctx.fillText('关于', DESIGN_W - 137, 76);
   ctx.fillText('重来', DESIGN_W - 88, 76);
   ctx.fillText(view.audioOn ? '声' : '静', DESIGN_W - 34, 76);
+  if (inSandbox) {
+    // 二次确认态：整枚按钮变实心 + 文案变「确定？」，不能只靠气泡说（气泡会消失）
+    if (view.clearArmed) {
+      ctx.fillStyle = 'rgba(150,74,58,0.16)';
+      ctx.beginPath();
+      wobblyRectPath(ctx, DESIGN_W - 204, 54, 50, 34, 8, 24);
+      ctx.fill();
+      ctx.fillStyle = '#964a3a';
+      ctx.fillText('确定？', DESIGN_W - 197, 76);
+    } else {
+      ctx.fillText('清空', DESIGN_W - 191, 76);
+    }
+  }
 
   // ---- 失败提示（只在场景上沿，不压地形）----
   // 提示项可以是字符串，也可以是 {beam, other}：**按玩家上一次造出来的形态分岔**（关1 在用）。

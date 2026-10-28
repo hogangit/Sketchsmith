@@ -27,7 +27,7 @@ const ROOT = path.resolve(HERE, '..');
 const env = await loadGameEnv();
 const { world: worldMod, runtime: runtimeMod, classify, compose, registry } = env;
 
-const { SANDBOX_LEVEL, SANDBOX_KEY, SANDBOX_MAX_CREATURES, loadSandbox, saveCreature, unlockSandbox } =
+const { SANDBOX_LEVEL, SANDBOX_KEY, SANDBOX_MAX_CREATURES, loadSandbox, saveCreature, unlockSandbox, clearSandbox, removeCreature } =
   await import(new URL('../src/level/sandbox.js', import.meta.url).href);
 const { createMemorySaveStore } = await import(new URL('../src/core/storage.js', import.meta.url).href);
 const { LINES, isTextOnlyLine } = await import(new URL('../src/text/lines.js', import.meta.url).href);
@@ -203,4 +203,33 @@ function reload(store) {
   console.log('⑤ 吐槽闭集：sb_toss1..4 存在 / ≤18 字 / textOnly 不进语音 ✔');
 }
 
-console.log('\n沙盒验收 5/5 通过');
+// ── 判据⑥：存满之后必须能腾地方（清空 / 单条删除）───────────────────────────
+// 为什么补这条：判据②证明「第 31 个会被拒」，但被拒之后玩家没有任何办法腾位置——
+// 上限 30 就成了一条死路。界面上给了「清空」（二次确认），这里是它背后的动作。
+{
+  const store = createMemorySaveStore();
+  unlockSandbox(store);
+  for (let i = 0; i < SANDBOX_MAX_CREATURES; i++) {
+    saveCreature(store, { id: `c${i}`, form: 'beam', thickness: 10, abilities: [], x: 100 + i, y: 600, strokes: [{ pts: [{ x: 100, y: 700 }, { x: 160, y: 702 }] }] });
+  }
+  const full = loadSandbox(store);
+  assert.equal(full.creatures.length, SANDBOX_MAX_CREATURES, '前置：应已存满');
+  assert.equal(saveCreature(store, { id: 'overflow', form: 'beam', x: 200, y: 600 }).reason, 'full', '前置：第 31 个应被拒');
+
+  // 清空：造物归零，但 **unlocked 不能跟着没**（清园子不该把解锁状态也清掉）
+  clearSandbox(store);
+  const after = loadSandbox(store);
+  assert.equal(after.creatures.length, 0, 'clearSandbox 后造物应为 0');
+  assert.equal(after.unlocked, true, 'clearSandbox 只删造物，不能把 unlocked 一起清掉');
+  assert.equal(saveCreature(store, { id: 'again', form: 'beam', x: 200, y: 600 }).ok, true, '清空后应能继续存');
+
+  // 单条删除：删一个只少一个，不存在的 id 要报 notfound 而不是静默
+  const r1 = removeCreature(store, 'again');
+  assert.equal(r1.ok, true, 'removeCreature 应删掉存在的 id');
+  assert.equal(loadSandbox(store).creatures.length, 0, '删完应为空');
+  const r2 = removeCreature(store, 'nope');
+  assert.equal(r2.reason, 'notfound', '删不存在的 id 必须报 notfound（不能假装成功）');
+  console.log(`⑥ 存满可腾地方：清空后 0 条且 unlocked 保留 / 单条删除 ok / 不存在 id 报 notfound ✔`);
+}
+
+console.log('\n沙盒验收 6/6 通过');

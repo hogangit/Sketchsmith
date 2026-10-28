@@ -34,7 +34,7 @@ import { LEVEL_CH1_02 } from './level/levels/ch1-02.js';
 import { LEVEL_CH1_03 } from './level/levels/ch1-03.js';
 import { LEVEL_CH1_04 } from './level/levels/ch1-04.js';
 import { LEVEL_CH1_05 } from './level/levels/ch1-05.js';
-import { SANDBOX_LEVEL, loadSandbox, saveCreature, unlockSandbox } from './level/sandbox.js';
+import { SANDBOX_LEVEL, clearSandbox, loadSandbox, saveCreature, unlockSandbox } from './level/sandbox.js';
 
 // 沙盒挂在数组末尾：通关最后一关后 nextLevel 会自然推进到它，不另开一套模式切换。
 // ⚠️ 因此「最后一关」永远是 GAME_LEVELS.length - 2（沙盒不算关）。
@@ -84,6 +84,7 @@ export function boot() {
     bubble: null,
     win: false,
     about: false,
+    clearArmed: false,      // 沙盒「清空」的二次确认态（误触清掉一园子造物不可接受）
     winAt: 0,
     failFlash: 0,
     fps: 60,
@@ -116,6 +117,7 @@ export function boot() {
   let introT0 = mainNow();
   let introLineSaid = false;
   let comboPlayedThisLevel = false;
+  let clearArmedAt = 0;
   /** 结束扉页：跳到淡出段起点（不硬切，也不让玩家觉得点了没反应） */
   function endIntro() {
     if (!introActive) return;
@@ -405,6 +407,24 @@ export function boot() {
       return true;
     }
     const btn = headerButtonAt(x, y);
+    if (btn === 'clear') {
+      // 非沙盒：按钮没画出来，静默吞掉这一下（那片区域本来就是空的头部）
+      if (!inSandbox()) return true;
+      AudioBus.play('ui');
+      // 二次确认：清空是**不可逆**的，误触一次就把一园子造物抹掉不能接受。
+      // 确认态 4 秒后自动解除，也不会被带到别的关卡。
+      if (!view.clearArmed) {
+        view.clearArmed = true;
+        clearArmedAt = mainNow();
+        toast('再点一次「确定？」，造物园就空了。', 3000);
+        return true;
+      }
+      view.clearArmed = false;
+      clearSandbox(store);
+      buildWorld();                 // 重建＝把场上造物撤掉，并从（已清空的）存档复原
+      toast('清空了。画点新的吧。', 2200);
+      return true;
+    }
     if (btn === 'about') { view.about = true; AudioBus.play('ui'); return true; }
     if (btn === 'retry') { AudioBus.play('ui'); retryLevel(); return true; }
     if (btn === 'audio') {
@@ -877,6 +897,8 @@ export function boot() {
 
     view.now = t;
     view.frameMs = dt;
+    // 「清空」的二次确认 4 秒后自动解除：玩家点了第一下又改主意，不该一直挂在"待确认"上
+    if (view.clearArmed && t - clearArmedAt > 4000) view.clearArmed = false;
     view.fps = view.fps * 0.9 + (1000 / Math.max(1, dt)) * 0.1;
     PerfGovernor.sample(dt, physMs);
     if (view.failFlash > 0) view.failFlash = Math.max(0, view.failFlash - dt / 600);

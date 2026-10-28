@@ -204,8 +204,25 @@ async function main() {
     const sb2 = await evalJs('JSON.stringify({n:__WCWZ__.runtime.creatures.length, rec:(__WCWZ__.store.read("wcwz:sandbox:v1")||{creatures:[]}).creatures.map(c=>({f:c.form,s:(c.strokes||[]).length,pts:(c.strokes&&c.strokes[0]&&c.strokes[0].pts)?c.strokes[0].pts.length:-1}))})');
     if (JSON.parse(sb2).n < 1) failures.push('重进沙盒后旧造物没接回来（creatures=' + JSON.parse(sb2).n + '，存档记录=' + JSON.stringify(JSON.parse(sb2).rec) + '）');
     else console.log(`[smoke] 沙盒：画 1 笔→造物 ${sbv.n} 个 / 落盘 ${sbv.saved} 条 / 重进接回 ${JSON.parse(sb2).n} 个 / 无误判`);
+
+    // 截图要在清空**之前**拍：清空后画面里既没造物也没了「清空」按钮，看不出界面长什么样
     const sbShot = await cdp.send('Page.captureScreenshot', { format: 'png' });
     fs.writeFileSync(path.join(ROOT, 'dist', 'smoke-sandbox.png'), Buffer.from(sbShot.data, 'base64'));
+
+    // ── 沙盒「清空」：真实点击两次（第一次是二次确认，不能一下就抹掉）──
+    const CLEAR_BTN = { x: 251, y: 71 };   // design 坐标 = DESIGN_W-204+25 / 54+17；视口 430×932 与设计 1:1
+    await click(CLEAR_BTN.x, CLEAR_BTN.y);
+    await sleep(200);
+    const armed = JSON.parse(await evalJs('JSON.stringify({a:__WCWZ__.view.clearArmed, n:__WCWZ__.runtime.creatures.length})'));
+    if (armed.a !== true) failures.push('点「清空」没有进入二次确认态（clearArmed=' + armed.a + '）');
+    if (armed.n < 1) failures.push('第一次点「清空」就把造物删了——二次确认没生效（creatures=' + armed.n + '）');
+    await click(CLEAR_BTN.x, CLEAR_BTN.y);
+    await sleep(500);
+    const cleared = JSON.parse(await evalJs('JSON.stringify({n:__WCWZ__.runtime.creatures.length, saved:(__WCWZ__.store.read("wcwz:sandbox:v1")||{creatures:[]}).creatures.length, a:__WCWZ__.view.clearArmed})'));
+    if (cleared.n !== 0) failures.push('二次确认后场上造物没清掉（creatures=' + cleared.n + '）');
+    if (cleared.saved !== 0) failures.push('二次确认后存档没清掉（saved=' + cleared.saved + '）——重进又会长回来');
+    if (cleared.a !== false) failures.push('清空后确认态没解除');
+    if (cleared.n === 0 && cleared.saved === 0) console.log('[smoke] 沙盒清空：第 1 点仅进入确认态（造物仍在）→ 第 2 点真清空 ✔');
 
     const errs = cdp.events.filter((e) => e.method === 'Runtime.exceptionThrown' ||
       (e.method === 'Runtime.consoleAPICalled' && e.params.type === 'error') ||

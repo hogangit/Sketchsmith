@@ -1883,6 +1883,9 @@ function headerButtonAt(x, y) {
   if (x > DESIGN_W - 46 && x < DESIGN_W - 10) return 'audio';
   if (x > DESIGN_W - 96 && x < DESIGN_W - 50) return 'retry';
   if (x > DESIGN_W - 152 && x < DESIGN_W - 100) return 'about';
+  // 沙盒「清空」：只在沙盒里画（见 drawHud），命中区却无条件存在——
+  // 是否生效由 main.js 的 handleUiTap 按 inSandbox() 判，HUD 不该知道玩法规则。
+  if (x > DESIGN_W - 204 && x < DESIGN_W - 154) return 'clear';
   return null;
 }
 
@@ -1974,11 +1977,27 @@ function drawHud(ctx, view) {
   drawWobblyBtn(DESIGN_W - 150, 50, 21);
   drawWobblyBtn(DESIGN_W - 96, 46, 22);
   drawWobblyBtn(DESIGN_W - 46, 36, 23);
+  // 沙盒独占的「清空」：造物满 30 后玩家必须能腾地方，否则存档上限就是一条死路
+  const inSandbox = !!(view.level && view.level.id === 'sandbox');
+  if (inSandbox) drawWobblyBtn(DESIGN_W - 204, 50, 24);
   ctx.fillStyle = '#5d5446';
   ctx.font = '12px system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif';
   ctx.fillText('关于', DESIGN_W - 137, 76);
   ctx.fillText('重来', DESIGN_W - 88, 76);
   ctx.fillText(view.audioOn ? '声' : '静', DESIGN_W - 34, 76);
+  if (inSandbox) {
+    // 二次确认态：整枚按钮变实心 + 文案变「确定？」，不能只靠气泡说（气泡会消失）
+    if (view.clearArmed) {
+      ctx.fillStyle = 'rgba(150,74,58,0.16)';
+      ctx.beginPath();
+      wobblyRectPath(ctx, DESIGN_W - 204, 54, 50, 34, 8, 24);
+      ctx.fill();
+      ctx.fillStyle = '#964a3a';
+      ctx.fillText('确定？', DESIGN_W - 197, 76);
+    } else {
+      ctx.fillText('清空', DESIGN_W - 191, 76);
+    }
+  }
 
   // ---- 失败提示（只在场景上沿，不压地形）----
   // 提示项可以是字符串，也可以是 {beam, other}：**按玩家上一次造出来的形态分岔**（关1 在用）。
@@ -5594,6 +5613,18 @@ function removeCreature(store, id) {
   return { ok: true, count: next.length };
 }
 
+/**
+ * 清空造物园（**只删造物，保留 unlocked 标记**）。
+ * 为什么需要它：`removeCreature` 只删一条，而界面上没有"选一条"的入口——
+ * 玩家存满 30 个以后会撞上 `reason:'full'`，却没有任何办法腾地方。
+ */
+function clearSandbox(store) {
+  const cur = loadSandbox(store);
+  const next = { unlocked: cur.unlocked, creatures: [] };
+  if (store && store.write) store.write(SANDBOX_KEY, next);
+  return { ok: true, count: 0 };
+}
+
 /** 标记沙盒已解锁（通关第 5 关那一刻调用） */
 function unlockSandbox(store) {
   const cur = loadSandbox(store);
@@ -5685,6 +5716,7 @@ function boot() {
     bubble: null,
     win: false,
     about: false,
+    clearArmed: false,      // 沙盒「清空」的二次确认态（误触清掉一园子造物不可接受）
     winAt: 0,
     failFlash: 0,
     fps: 60,
@@ -5717,6 +5749,7 @@ function boot() {
   let introT0 = mainNow();
   let introLineSaid = false;
   let comboPlayedThisLevel = false;
+  let clearArmedAt = 0;
   /** 结束扉页：跳到淡出段起点（不硬切，也不让玩家觉得点了没反应） */
   function endIntro() {
     if (!introActive) return;
@@ -6006,6 +6039,24 @@ function boot() {
       return true;
     }
     const btn = headerButtonAt(x, y);
+    if (btn === 'clear') {
+      // 非沙盒：按钮没画出来，静默吞掉这一下（那片区域本来就是空的头部）
+      if (!inSandbox()) return true;
+      AudioBus.play('ui');
+      // 二次确认：清空是**不可逆**的，误触一次就把一园子造物抹掉不能接受。
+      // 确认态 4 秒后自动解除，也不会被带到别的关卡。
+      if (!view.clearArmed) {
+        view.clearArmed = true;
+        clearArmedAt = mainNow();
+        toast('再点一次「确定？」，造物园就空了。', 3000);
+        return true;
+      }
+      view.clearArmed = false;
+      clearSandbox(store);
+      buildWorld();                 // 重建＝把场上造物撤掉，并从（已清空的）存档复原
+      toast('清空了。画点新的吧。', 2200);
+      return true;
+    }
     if (btn === 'about') { view.about = true; AudioBus.play('ui'); return true; }
     if (btn === 'retry') { AudioBus.play('ui'); retryLevel(); return true; }
     if (btn === 'audio') {
@@ -6478,6 +6529,8 @@ function boot() {
 
     view.now = t;
     view.frameMs = dt;
+    // 「清空」的二次确认 4 秒后自动解除：玩家点了第一下又改主意，不该一直挂在"待确认"上
+    if (view.clearArmed && t - clearArmedAt > 4000) view.clearArmed = false;
     view.fps = view.fps * 0.9 + (1000 / Math.max(1, dt)) * 0.1;
     PerfGovernor.sample(dt, physMs);
     if (view.failFlash > 0) view.failFlash = Math.max(0, view.failFlash - dt / 600);

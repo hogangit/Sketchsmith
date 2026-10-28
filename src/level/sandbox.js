@@ -109,6 +109,18 @@ export function removeCreature(store, id) {
   return { ok: true, count: next.length };
 }
 
+/**
+ * 清空造物园（**只删造物，保留 unlocked 标记**）。
+ * 为什么需要它：`removeCreature` 只删一条，而界面上没有"选一条"的入口——
+ * 玩家存满 30 个以后会撞上 `reason:'full'`，却没有任何办法腾地方。
+ */
+export function clearSandbox(store) {
+  const cur = loadSandbox(store);
+  const next = { unlocked: cur.unlocked, creatures: [] };
+  if (store && store.write) store.write(SANDBOX_KEY, next);
+  return { ok: true, count: 0 };
+}
+
 /** 标记沙盒已解锁（通关第 5 关那一刻调用） */
 export function unlockSandbox(store) {
   const cur = loadSandbox(store);
