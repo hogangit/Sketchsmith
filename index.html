@@ -2122,7 +2122,15 @@ const ABILITIES = {
           if (other.plugin && other.plugin.actor) {
             const tx = other.plugin.actorTargetX != null ? other.plugin.actorTargetX : other.position.x + 1;
             const dir = Math.sign(tx - other.position.x) || 1;
-            M.Body.setVelocity(other, { x: dir * ACTOR.speed * 2.0, y: -TICKLE_ACTOR_VY });
+            // 先把小人抬到怕痒体顶面之上再弹：厚板（thick≥24 实测）会让接触变成「侧面深穿透」，
+            // 求解器每步都在把水平速度磨掉 ⇒ 小人被卡在板上无限弹跳（trace 卡 x≈183 反复起落）。
+            // 钩子跑在求解器之前（runtime beforeStep 调度），此处 setPosition 是安全窗口。
+            const r = other.circleRadius || 14;
+            const topY = ctx.matterBody.bounds ? ctx.matterBody.bounds.min.y : other.position.y - r;
+            if (other.position.y + r > topY - 1) {
+              M.Body.setPosition(other, { x: other.position.x, y: topY - r - 2 });
+            }
+            M.Body.setVelocity(other, { x: dir * ACTOR.speed * 2.6, y: -TICKLE_ACTOR_VY });
             return;
           }
           // ⚠️ TICKLE_K 是**独立导出**，不是 MATERIALS 的成员：写成 MATERIALS.TICKLE_K 会拿到
