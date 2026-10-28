@@ -30,6 +30,8 @@ export const LEVEL_CH1_03 = {
     beamOutline: null,
   },
   scenery: [
+    // 纯标记、不绘制：本关有水塘与芦苇，同样算「有风」（F4 帽檐微动）
+    { kind: 'wind' },
     { kind: 'line', x1: 0, y1: 430, x2: 430, y2: 430, width: 2 },
     { kind: 'rect', x: 340, y: 372, w: 56, h: 58 },          // 泵体
     { kind: 'circle', x: 340, y: 344, r: 13 },               // 泵头

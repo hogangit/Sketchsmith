@@ -59,6 +59,8 @@ export const LEVEL_CH1_02 = {
     highlight: [{ x: 214, y: 258, r: 24 }],
   },
   scenery: [
+    // 纯标记、不绘制：声明本关「有风」，驱动农夫帽檐微动（F4）与横向风线动效（art-polish 四章）
+    { kind: 'wind' },
     { kind: 'chasm', x1: 200, x2: 330, y: 300, depth: 170 },
     { kind: 'line', x1: 0, y1: 300, x2: 200, y2: 300, width: 2.5 },
     { kind: 'line', x1: 330, y1: 300, x2: 430, y2: 300, width: 2.5 },

@@ -100,6 +100,7 @@ export function boot() {
   let sceneSeed = 1;
   let lastBubbleKey = '';
   let winTimer = 0;
+  let actorStillSince = null;   // 农夫开始静止的时刻（ms），用于 F1 挠头的空闲计时
 
   // 开场扉页：introActive 期间冻结物理——「点一下就开始」要名副其实，
   // 否则玩家还在看扉页，小人已经自己开走了。
@@ -612,7 +613,7 @@ export function boot() {
     return true;
   }
 
-  function drawBodies(ctx) {
+  function drawBodies(ctx, tMs) {
     if (!world) return;
     const bodies = world.allBodies();
     view.bodyCount = bodies.length;
@@ -631,10 +632,36 @@ export function boot() {
       if (b.label === 'actor') {
         // 人形，不是一个圈：草帽+头+身+两臂+两腿（细节见 handdrawn.drawFarmer）
         const vx = (b.velocity && b.velocity.x) || 0;
-        const face = vx < -0.2 ? -1 : 1;
+        const moving = Math.abs(vx) > 0.25;
         b.plugin = b.plugin || {};
         b.plugin.gait = (b.plugin.gait || 0) + Math.abs(vx) * 0.055;
-        drawFarmer(ctx, b.position.x, b.position.y, { phase: b.plugin.gait, face });
+
+        // ── 农夫「活」感 F1–F4（art-polish 第五章）──────────────────────────
+        // 走路朝向永远优先；站着不动时才转头看造物（F2），否则走路与注视会打架。
+        const a = runtime && runtime.state ? runtime.state.actor : null;
+        const isOurActor = !!(a && a.body === b);
+        let face = vx < -0.2 ? -1 : 1;
+        let look = false;
+        if (!moving && runtime) {
+          let cx = null;
+          for (const c of runtime.creatures || []) {
+            const cb = c.bodies && c.bodies[0];
+            if (cb && cb.position) cx = cb.position.x;   // 取最后一个（最新的造物）
+          }
+          if (cx != null && Math.abs(cx - b.position.x) > 6) {
+            face = cx < b.position.x ? -1 : 1;
+            look = true;
+          }
+        }
+        // F1 挠头的空闲计时：以真实时刻记，不用固定步长累加（掉帧时不会误判）
+        if (moving || !isOurActor) actorStillSince = null;
+        else if (actorStillSince == null) actorStillSince = tMs;
+        const idle = isOurActor && actorStillSince != null && tMs - actorStillSince > 1200;
+        const jump = !!(isOurActor && a.jumping > 0);                 // F3
+        const windy = !!(view.level && (view.level.scenery || []).some((s) => s.kind === 'wind'));  // F4
+        drawFarmer(ctx, b.position.x, b.position.y, {
+          phase: b.plugin.gait, face, t: tMs / 1000, jump, idle, look, windy,
+        });
         continue;
       }
       // 造物（含 compound 的子 parts）
@@ -705,7 +732,7 @@ export function boot() {
     const ctx = surface.ctx;
     staticLayer.ensure(drawStatics);
     staticLayer.blit(ctx);
-    drawBodies(ctx);
+    drawBodies(ctx, t);
     drawBook(ctx);
     drawHud(ctx, view);
     // 关于浮层：在 HUD 之上、扉页之下（开场时打不开，所以不会被扉页盖住）

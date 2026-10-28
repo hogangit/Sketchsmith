@@ -86,6 +86,15 @@ export function drawPaper(ctx, x, y, w, h) {
  * 坐标按 body 中心给：脚踩 y+13.5，头顶 y-13，与 r=14 的物理圆一致。
  * phase 由移动距离累积，停下时脚合拢；face=+1 朝右 / -1 朝左。
  */
+/**
+ * 农夫。仍是墨色火柴人（D5 红线：不填色卡通化）。
+ * opts: { face, scale, phase, t, jump, idle, look, windy }
+ *   t      —— 秒，驱动挠头弧与帽檐抖动的相位
+ *   jump   —— F3 跳跃姿势（双臂上举 / 双腿收拢 / 帽上抬 1px）
+ *   idle   —— F1 挠头（空闲 >1.2s 且非跳跃才由调用方置真）
+ *   look   —— F2 看向造物（眼睛额外偏 0.6px 朝面朝方向）
+ *   windy  —— F4 帽檐风动（仅起风关卡）
+ */
 export function drawFarmer(ctx, cx, cy, opts) {
   const o = opts || {};
   const face = o.face == null ? 1 : (o.face < 0 ? -1 : 1);
@@ -93,6 +102,10 @@ export function drawFarmer(ctx, cx, cy, opts) {
   // 不会因为画大了就浮在地面上方（物理圆 r=14，底边 = cy+14）。
   const s = o.scale == null ? 1.5 : o.scale;
   const swing = Math.sin(o.phase || 0) * 3;
+  const t = o.t || 0;
+  const jump = !!o.jump;
+  const idle = !!o.idle && !jump;   // F1 让位给 F3：跳跃时不挠头
+  const windy = !!o.windy;
   const INK = '#3a352c';
   ctx.save();
   ctx.translate(cx, cy + 13.5);
@@ -104,30 +117,69 @@ export function drawFarmer(ctx, cx, cy, opts) {
   ctx.fillStyle = 'rgba(90,80,64,0.16)';
   ctx.beginPath(); ctx.ellipse(0, 13.5, 10, 2.8, 0, 0, Math.PI * 2); ctx.fill();
   ctx.strokeStyle = INK;
-  // 腿
+  // 腿（F3：收拢上抬，读成"腾空"而不是站着被平移）
   ctx.lineWidth = 2.4;
-  ctx.beginPath(); ctx.moveTo(0, 4); ctx.lineTo(-4 + swing, 13); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(0, 4); ctx.lineTo(4 - swing, 13); ctx.stroke();
+  if (jump) {
+    ctx.beginPath(); ctx.moveTo(0, 4); ctx.lineTo(-2.8, 10); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0, 4); ctx.lineTo(2.2, 10.8); ctx.stroke();
+  } else {
+    ctx.beginPath(); ctx.moveTo(0, 4); ctx.lineTo(-4 + swing, 13); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0, 4); ctx.lineTo(4 - swing, 13); ctx.stroke();
+  }
   // 躯干
   ctx.lineWidth = 3.2;
   ctx.beginPath(); ctx.moveTo(0, -4.2); ctx.lineTo(0, 4.6); ctx.stroke();
   // 手臂
   ctx.lineWidth = 2.1;
-  ctx.beginPath(); ctx.moveTo(0, -2.6); ctx.lineTo(-6, 2.8); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(0, -2.6); ctx.lineTo(6 - swing * 0.6, 3.4); ctx.stroke();
+  if (jump) {
+    // F3 双臂上举
+    ctx.beginPath(); ctx.moveTo(0, -2.6); ctx.lineTo(-5.2, -8.2); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0, -2.6); ctx.lineTo(5.0, -8.6); ctx.stroke();
+  } else if (idle) {
+    // F1 挠头：肩→肘→头侧，另一条臂照常摆
+    ctx.beginPath(); ctx.moveTo(0, -2.6); ctx.lineTo(-3.5, -6); ctx.lineTo(-4.6, -9); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0, -2.6); ctx.lineTo(6 - swing * 0.6, 3.4); ctx.stroke();
+    // 肘部 2 段小弧（周期约 0.8s）——"他在想"的可读性全靠这两笔
+    ctx.lineWidth = 1.2;
+    for (let i = 0; i < 2; i++) {
+      const ph = t * 7.85 + i * 2.1;
+      ctx.beginPath();
+      ctx.arc(-4.9, -9.5, 1.2, 0.6 + Math.sin(ph) * 0.5, 2.4 + Math.sin(ph) * 0.5);
+      ctx.stroke();
+    }
+  } else {
+    ctx.beginPath(); ctx.moveTo(0, -2.6); ctx.lineTo(-6, 2.8); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0, -2.6); ctx.lineTo(6 - swing * 0.6, 3.4); ctx.stroke();
+  }
   // 头
+  ctx.lineWidth = 1.7;
   ctx.beginPath(); ctx.arc(0.6, -8.4, 4.3, 0, Math.PI * 2);
   ctx.fillStyle = '#f3eddc'; ctx.fill();
   ctx.lineWidth = 1.7; ctx.stroke();
-  // 草帽：帽檐 + 帽顶
-  ctx.beginPath(); ctx.ellipse(0.6, -11.4, 8.4, 2.5, 0, 0, Math.PI * 2);
+  // 草帽：帽檐 + 帽顶（F3 整体上抬 1px；F4 帽檐外侧微抖）
+  const hatDy = jump ? -1 : 0;
+  const brimTilt = windy ? Math.sin(t * 2.6) * 0.055 : 0;      // 帽檐整体微倾
+  const brimTip = windy ? Math.sin(t * 2.6 + 1.1) * 1.0 : 0;   // 外侧两点抖幅 1px
+  ctx.beginPath();
+  ctx.ellipse(0.6, -11.4 + hatDy, 8.4, 2.5, brimTilt, 0, Math.PI * 2);
   ctx.fillStyle = '#d9c69b'; ctx.fill();
   ctx.lineWidth = 1.3; ctx.stroke();
-  ctx.beginPath(); ctx.arc(0.6, -11.1, 3.2, Math.PI, Math.PI * 2);
+  ctx.beginPath();
+  ctx.arc(0.6, -11.1 + hatDy + (windy ? Math.sin(t * 2.6) * 0.35 : 0), 3.2, Math.PI, Math.PI * 2);
   ctx.fillStyle = '#cfba8c'; ctx.fill(); ctx.stroke();
-  // 眼睛（朝右，让"面朝对岸"可读）
+  if (windy) {
+    // 帽檐左右外侧各一点，按风相位上下抖
+    ctx.lineWidth = 1.1;
+    for (const sx of [-7.6, 8.6]) {
+      ctx.beginPath();
+      ctx.moveTo(sx, -11.4 + hatDy);
+      ctx.lineTo(sx + 1.4, -11.4 + hatDy + brimTip * (sx < 0 ? 1 : -1));
+      ctx.stroke();
+    }
+  }
+  // 眼睛（朝面朝方向；F2 看向造物时额外偏 0.6px）
   ctx.fillStyle = INK;
-  ctx.beginPath(); ctx.arc(2.3, -8.8, 0.9, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(2.3 + (o.look ? 0.6 : 0), -8.8, 0.9, 0, Math.PI * 2); ctx.fill();
   ctx.restore();
 }
 
