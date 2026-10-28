@@ -45,6 +45,7 @@ export const LEVEL_CH1_05 = {
   plates: [],
   goal: { type: 'reachActor', x: 372, maxY: 320 },
   resetActorIfBelowY: 620,
+  failSfx: 'water',   // 落水有专属水声（环境音），替代通用失败音（D4 失败零成本，落水本质是物理事件）
   guides: [{ x: 150 }, { x: 280 }],
   hints: {
     highlight: [{ x: 215, y: 350, r: 26 }],

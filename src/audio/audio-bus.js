@@ -32,7 +32,7 @@ const AUDIO_SCHED_INTERVAL_MS = 25;
 const AUDIO_BGM_GAIN = 0.16;
 
 /** 6 个 P0 音效配方（噪声源 | 振荡器 | 滤波 | 包络 | 时长），全部 [待实机标定] */
-const AUDIO_SFX_RECIPES = {
+export const AUDIO_SFX_RECIPES = {
   pendown: { type: 'noise', noise: 'white', dur: 0.09, gain: 0.30, filter: { type: 'bandpass', f0: 2600, f1: 1400, q: 1.1 }, attack: 0.002 },
   spawn: { type: 'tone', wave: 'triangle', f0: 220, f1: 132, dur: 0.34, gain: 0.24, attack: 0.006, filter: { type: 'lowpass', f0: 1800, f1: 500, q: 0.8 } },
   ability: { type: 'tone', wave: 'sine', f0: 660, f1: 990, dur: 0.18, gain: 0.18, attack: 0.004 },
@@ -41,6 +41,10 @@ const AUDIO_SFX_RECIPES = {
   stamp: { type: 'noise', noise: 'brown', dur: 0.20, gain: 0.34, filter: { type: 'lowpass', f0: 900, f1: 180, q: 0.7 }, attack: 0.001 },
   collide: { type: 'noise', noise: 'brown', dur: 0.12, gain: 0.20, filter: { type: 'lowpass', f0: 700, f1: 200, q: 0.9 }, attack: 0.001 },
   ui: { type: 'tone', wave: 'square', f0: 440, f1: 440, dur: 0.05, gain: 0.10, attack: 0.002 },
+  // 关4 怕痒弹射小人：弹簧「boing」——快速上扫正弦 + 轻噪声尾，听感是「被弹起来」而非「被砸」
+  spring: { type: 'tone', wave: 'sine', f0: 300, f1: 640, dur: 0.22, gain: 0.20, attack: 0.003, filter: { type: 'lowpass', f0: 2200, f1: 900, q: 0.9 } },
+  // 关5 落水：环境水声——带通白噪，中心频率慢扫 400→1200Hz（水面感），[audio-spec 附录B sfx_water]
+  water: { type: 'noise', noise: 'white', dur: 0.40, gain: 0.26, filter: { type: 'bandpass', f0: 400, f1: 1200, q: 1.0 }, attack: 0.03 },
 };
 
 const AUDIO_MODE_SCALES = {

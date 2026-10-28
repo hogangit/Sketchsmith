@@ -2540,7 +2540,7 @@ function createLevelRuntime(opts) {
       }
       h.fn({ Matter: MATTER_RT, matterBody: tickleBody, otherBody: other, normal: n, nowMs });
     }
-    emit('creature:tickle', { creatureId: c.id });
+    emit('creature:tickle', { creatureId: c.id, actor: !!(other.plugin && other.plugin.actor) });
   }
   /** 物理步结束后调用：扫描当前活跃碰撞对，对已识别的怕痒接触施加冲量（求解器外，安全） */
   function flushTickles() {
@@ -2719,7 +2719,7 @@ function createLevelRuntime(opts) {
     state.failStreak++;
     state.lastFailReason = reason;
     state.hintLevel = Math.min(3, state.failStreak);
-    emit('level:fail', { reason, failStreak: state.failStreak, hintLevel: state.hintLevel });
+    emit('level:fail', { reason, failStreak: state.failStreak, hintLevel: state.hintLevel, failSfx: level.failSfx || null });
   }
 
   /** 南瓜被判定为终态（碎 / 退回岸 / 站在造物上 / 卡沟壁）：报失败，并在原位再长一颗 */
@@ -3319,6 +3319,10 @@ const AUDIO_SFX_RECIPES = {
   stamp: { type: 'noise', noise: 'brown', dur: 0.20, gain: 0.34, filter: { type: 'lowpass', f0: 900, f1: 180, q: 0.7 }, attack: 0.001 },
   collide: { type: 'noise', noise: 'brown', dur: 0.12, gain: 0.20, filter: { type: 'lowpass', f0: 700, f1: 200, q: 0.9 }, attack: 0.001 },
   ui: { type: 'tone', wave: 'square', f0: 440, f1: 440, dur: 0.05, gain: 0.10, attack: 0.002 },
+  // 关4 怕痒弹射小人：弹簧「boing」——快速上扫正弦 + 轻噪声尾，听感是「被弹起来」而非「被砸」
+  spring: { type: 'tone', wave: 'sine', f0: 300, f1: 640, dur: 0.22, gain: 0.20, attack: 0.003, filter: { type: 'lowpass', f0: 2200, f1: 900, q: 0.9 } },
+  // 关5 落水：环境水声——带通白噪，中心频率慢扫 400→1200Hz（水面感），[audio-spec 附录B sfx_water]
+  water: { type: 'noise', noise: 'white', dur: 0.40, gain: 0.26, filter: { type: 'bandpass', f0: 400, f1: 1200, q: 1.0 }, attack: 0.03 },
 };
 
 const AUDIO_MODE_SCALES = {
@@ -4121,6 +4125,7 @@ const LEVEL_CH1_05 = {
   plates: [],
   goal: { type: 'reachActor', x: 372, maxY: 320 },
   resetActorIfBelowY: 620,
+  failSfx: 'water',   // 落水有专属水声（环境音），替代通用失败音（D4 失败零成本，落水本质是物理事件）
   guides: [{ x: 150 }, { x: 280 }],
   hints: {
     highlight: [{ x: 215, y: 350, r: 26 }],
@@ -4528,7 +4533,7 @@ function boot() {
   }
 
   function onFail(payload) {
-    AudioBus.play('fail');
+    AudioBus.play(payload && payload.failSfx ? payload.failSfx : 'fail');
     view.failFlash = 1;
     const lv = view.level;
     // 终态台词优先（D24/D25）：位置决定说哪句，判定只有一条。
@@ -4544,6 +4549,7 @@ function boot() {
 
   bus.on('level:win', onWin);
   bus.on('level:fail', onFail);
+  bus.on('creature:tickle', (e) => { if (e && e.actor) AudioBus.play('spring'); });  // 关4 弹射小人的弹簧音
   bus.on('plate:on', () => AudioBus.play('ability'));
   bus.on('ability:rejected', () => {
     AudioBus.play('ui');

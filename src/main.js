@@ -269,7 +269,7 @@ export function boot() {
   }
 
   function onFail(payload) {
-    AudioBus.play('fail');
+    AudioBus.play(payload && payload.failSfx ? payload.failSfx : 'fail');
     view.failFlash = 1;
     const lv = view.level;
     // 终态台词优先（D24/D25）：位置决定说哪句，判定只有一条。
@@ -285,6 +285,7 @@ export function boot() {
 
   bus.on('level:win', onWin);
   bus.on('level:fail', onFail);
+  bus.on('creature:tickle', (e) => { if (e && e.actor) AudioBus.play('spring'); });  // 关4 弹射小人的弹簧音
   bus.on('plate:on', () => AudioBus.play('ability'));
   bus.on('ability:rejected', () => {
     AudioBus.play('ui');

@@ -222,7 +222,7 @@ export function createLevelRuntime(opts) {
       }
       h.fn({ Matter: MATTER_RT, matterBody: tickleBody, otherBody: other, normal: n, nowMs });
     }
-    emit('creature:tickle', { creatureId: c.id });
+    emit('creature:tickle', { creatureId: c.id, actor: !!(other.plugin && other.plugin.actor) });
   }
   /** 物理步结束后调用：扫描当前活跃碰撞对，对已识别的怕痒接触施加冲量（求解器外，安全） */
   function flushTickles() {
@@ -401,7 +401,7 @@ export function createLevelRuntime(opts) {
     state.failStreak++;
     state.lastFailReason = reason;
     state.hintLevel = Math.min(3, state.failStreak);
-    emit('level:fail', { reason, failStreak: state.failStreak, hintLevel: state.hintLevel });
+    emit('level:fail', { reason, failStreak: state.failStreak, hintLevel: state.hintLevel, failSfx: level.failSfx || null });
   }
 
   /** 南瓜被判定为终态（碎 / 退回岸 / 站在造物上 / 卡沟壁）：报失败，并在原位再长一颗 */
