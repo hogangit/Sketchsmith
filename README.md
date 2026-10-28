@@ -1,4 +1,9 @@
-# 我是造物主 · 5 关 + 沙盒「造物园」（v0.3.0）
+# Sketchsmith《我是造物主》· 5 关 + 沙盒「造物园」（v0.3.0）
+
+> **Sketchsmith** · *I Am the Creator*
+> Draw it. Bless it. See if it holds.
+>
+> 英文名与命名依据见 `docs/naming.md`（唯一出处）。
 
 关 1–5 + 沙盒，**全 5 关均已真浏览器冒烟实测走通**（关 4 弹射已打通，见第六节 D27）。
 单文件 `file://` 双击即开，零网络请求。
