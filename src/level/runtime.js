@@ -44,6 +44,9 @@ function spawnWalkerBody(def, world) {
   const body = MATTER_RT.Bodies.circle(def.x, def.y, ACTOR.radius, {
     label: 'actor', friction: ACTOR.friction, frictionAir: ACTOR.frictionAir, restitution: 0,
   });
+  body.plugin = body.plugin || {};
+  body.plugin.actor = true;            // 供 tickle 等钩子识别「这是小人」做特例处理
+  body.plugin.actorTargetX = def.targetX;
   MATTER_RT.Body.setMass(body, ACTOR.mass);
   world.addBody(body);
   return {

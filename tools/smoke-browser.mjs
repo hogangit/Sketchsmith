@@ -26,10 +26,9 @@ const CASES = [
   { level: 0, name: 'L1 梁+变硬', line: [148, 700, 352, 703], ability: 'harden' },
   { level: 1, name: 'L2 梁+变硬', line: [182, 700, 356, 704], ability: 'harden' },
   { level: 2, name: 'L3 团块+变重', circle: [340, 700, 34], ability: 'heavy' },
-  // ⚠️ 关4 弹射主解**实测未过**，撤出冒烟表待标定（别让每次 smoke 都红，也别假装它过了）：
-  //   薄板 x180..250 + 变硬+怕痒 ⇒ 卡在 playing 16s，小人上不去。
-  //   造物生成**是对的**（form=beam, abilities=[harden,tickle], mass=1.86）⇒ 不是接线问题，
-  //   是「垂直弹射不带水平位移」这个物理事实。标定方案见 README 第六节。
+  // 关4 弹射主解：弹簧板画在崖前平地（中心 x≈142，落在可绘制窗口 [100,155] 内），点「变硬+怕痒」
+  // 小人踩中沿法线被弹起、actor 特例改「向上+朝目标」弹射（D27），抛物线落上高台。
+  { level: 3, name: 'L4 弹射板(变硬+怕痒)', line: [107, 700, 177, 704], ability: ['harden', 'tickle'] },
   { level: 4, name: 'L5 跨河长桥+变硬', line: [140, 700, 292, 704], ability: 'harden' },
 ];
 

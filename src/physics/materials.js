@@ -55,6 +55,14 @@ export const DENSITY_MUL_LIGHT = 0.2;
  */
 export const TICKLE_K = 8.5;
 
+/**
+ * 小人（actor）被怕痒体弹起时的竖直弹速（独立常量，不复用 TICKLE_K）。
+ * 比 TICKLE_K 略高：让抛弧更高，使「板画偏左/偏右」都能落上平台——
+ * 偏左需要更长的水平行程够到墙，偏右需要在到达墙(x=200)时已在 y<300 以上越过墙顶角。
+ * 9.6 实测覆盖 boardCx ∈ [100, 185] 全部过关（见 docs/decisions.md D27）。
+ */
+export const TICKLE_ACTOR_VY = 9.6;
+
 /** 怕痒同对刚体冷却（毫秒），防一次接触跨多子步连发 */
 export const TICKLE_COOLDOWN_MS = 200;
 

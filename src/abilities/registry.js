@@ -10,7 +10,7 @@
  * 其余 20 个只登记名字（PLANNED_ABILITY_NAMES），**没有记录、没有实现**，不许当已完成。
  */
 import {
-  CREATURE_HARD, CREATURE_ROLL, DENSITY_MUL_HEAVY, DENSITY_MUL_LIGHT, MATERIALS, TICKLE_K,
+  CREATURE_HARD, CREATURE_ROLL, DENSITY_MUL_HEAVY, DENSITY_MUL_LIGHT, MATERIALS, TICKLE_K, TICKLE_ACTOR_VY, ACTOR,
 } from '../physics/materials.js';
 
 export const ABILITIES = {
@@ -79,6 +79,18 @@ export const ABILITIES = {
           const M = ctx.Matter;
           const other = ctx.otherBody;
           if (!other || other.isStatic) return;
+          // ── 小人特例：蹦床语义（D27）──
+          // 平放的怕痒体挡在小人面前时，他先撞到板「侧面」（接触法线水平），沿法线弹会被
+          // 往左推飞、永远登不上板顶。所以对 actor 改为「向上 + 朝目标方向」的竖直弹射，
+          // 保住设计意图「把小人弹上高台」，只是实现手段从「接触法线」换成对 actor 的特例。
+          // 竖直速度用 TICKLE_K（=8.5，单跳约 130px，恰好够越 130px 落差），水平用它自身的
+          // 行走速度，落地后再由 stepWalker 接管走到目标点。
+          if (other.plugin && other.plugin.actor) {
+            const tx = other.plugin.actorTargetX != null ? other.plugin.actorTargetX : other.position.x + 1;
+            const dir = Math.sign(tx - other.position.x) || 1;
+            M.Body.setVelocity(other, { x: dir * ACTOR.speed * 2.0, y: -TICKLE_ACTOR_VY });
+            return;
+          }
           // ⚠️ TICKLE_K 是**独立导出**，不是 MATERIALS 的成员：写成 MATERIALS.TICKLE_K 会拿到
           // undefined ⇒ 冲量算成 NaN ⇒ 整局物理在第 118 帧炸掉（探针实测 nanF=118 的根因）。
           const k = TICKLE_K;

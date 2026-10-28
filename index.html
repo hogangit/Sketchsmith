@@ -1498,6 +1498,14 @@ const DENSITY_MUL_LIGHT = 0.2;
  */
 const TICKLE_K = 8.5;
 
+/**
+ * 小人（actor）被怕痒体弹起时的竖直弹速（独立常量，不复用 TICKLE_K）。
+ * 比 TICKLE_K 略高：让抛弧更高，使「板画偏左/偏右」都能落上平台——
+ * 偏左需要更长的水平行程够到墙，偏右需要在到达墙(x=200)时已在 y<300 以上越过墙顶角。
+ * 9.6 实测覆盖 boardCx ∈ [100, 185] 全部过关（见 docs/decisions.md D27）。
+ */
+const TICKLE_ACTOR_VY = 9.6;
+
 /** 怕痒同对刚体冷却（毫秒），防一次接触跨多子步连发 */
 const TICKLE_COOLDOWN_MS = 200;
 
@@ -2105,6 +2113,18 @@ const ABILITIES = {
           const M = ctx.Matter;
           const other = ctx.otherBody;
           if (!other || other.isStatic) return;
+          // ── 小人特例：蹦床语义（D27）──
+          // 平放的怕痒体挡在小人面前时，他先撞到板「侧面」（接触法线水平），沿法线弹会被
+          // 往左推飞、永远登不上板顶。所以对 actor 改为「向上 + 朝目标方向」的竖直弹射，
+          // 保住设计意图「把小人弹上高台」，只是实现手段从「接触法线」换成对 actor 的特例。
+          // 竖直速度用 TICKLE_K（=8.5，单跳约 130px，恰好够越 130px 落差），水平用它自身的
+          // 行走速度，落地后再由 stepWalker 接管走到目标点。
+          if (other.plugin && other.plugin.actor) {
+            const tx = other.plugin.actorTargetX != null ? other.plugin.actorTargetX : other.position.x + 1;
+            const dir = Math.sign(tx - other.position.x) || 1;
+            M.Body.setVelocity(other, { x: dir * ACTOR.speed * 2.0, y: -TICKLE_ACTOR_VY });
+            return;
+          }
           // ⚠️ TICKLE_K 是**独立导出**，不是 MATERIALS 的成员：写成 MATERIALS.TICKLE_K 会拿到
           // undefined ⇒ 冲量算成 NaN ⇒ 整局物理在第 118 帧炸掉（探针实测 nanF=118 的根因）。
           const k = TICKLE_K;
@@ -2334,6 +2354,9 @@ function spawnWalkerBody(def, world) {
   const body = MATTER_RT.Bodies.circle(def.x, def.y, ACTOR.radius, {
     label: 'actor', friction: ACTOR.friction, frictionAir: ACTOR.frictionAir, restitution: 0,
   });
+  body.plugin = body.plugin || {};
+  body.plugin.actor = true;            // 供 tickle 等钩子识别「这是小人」做特例处理
+  body.plugin.actorTargetX = def.targetX;
   MATTER_RT.Body.setMass(body, ACTOR.mass);
   world.addBody(body);
   return {
@@ -3979,8 +4002,12 @@ const LEVEL_CH1_03 = {
  * ── 坐标系参照物（D22 流程规则：每个数自带轴向 + 参照物 + 区分哪两种状态）──────
  *   · 高台顶面 **y = 300** 是「上去了」的判定基准（低地顶面 430，落差 130px ≈ 4.6× 小人高度）。
  *   · `goal.maxY = 320` = 平台顶 300 + 20px 容差；低地 y=416 远超 320 ⇒ 不会误判为过关。
- *   · 低地右缘 x=240 与高台左壁 x=240 **直接相接、无坑** ⇒ 小人走到 x≈234 被墙挡住原地跳，
- *     不会掉进坑里（防"还没开始就失败"）。
+ *   · 低地右缘 x=200 与高台左壁 x=200 **直接相接、无坑** ⇒ 小人走到 x≈186 被墙挡住原地跳，
+ *     不会掉进坑里（防"还没开始就失败"）。墙设在 200（而非更早的 240）是为了让怕痒弹射的
+ *     水平行程够得着平台——实测墙在 240 时板画偏左会落点卡在墙左、自动跳越不过 130px 高台。
+ *   · **弹簧板可绘制窗口 = 板中心 x ∈ [120, 164]**（板宽约 70、右缘需 <200 不压到平台）。
+ *     太左（<120）弹射落点卡在墙左、自动跳越不过；太右（≥165）板压到平台被物理挤飞。
+ *     提示 beamOutline 已指向 (108,176) 即该窗口中线，玩家照画即可过（D27 实测 10/10）。
  *
  * ── 一条都不建的 ──────────────────────────────────────────────────────────
  *   咬合 / 感光 / 沙漏 等新机关类型全不做；关4 不引入第 5 类机关原型。
@@ -3993,19 +4020,19 @@ const LEVEL_CH1_04 = {
   chips: ['harden', 'heavy', 'tickle', 'light'],
   spawnY: 84,
   terrain: [
-    { x: 120, y: 471, w: 240, h: 82, mat: 'ground' },   // 低地：x 0..240，顶面 430
-    { x: 330, y: 370, w: 180, h: 140, mat: 'ground' },  // 高台：x 240..420，顶面 300
+    { x: 100, y: 471, w: 200, h: 82, mat: 'ground' },   // 低地：x 0..200，顶面 430
+    { x: 310, y: 370, w: 220, h: 140, mat: 'ground' },  // 高台：x 200..420，顶面 300（墙左移到 200，弹射水平距离才够得着）
     { x: 250, y: 296, w: 34, h: 8, mat: 'ground' },     // 薄石台：x 233..267，顶面 292
   ],
   actors: [{ kind: 'walker', x: 60, y: 416, targetX: 340, label: '小人' }],
   props: [],
   plates: [],
-  goal: { type: 'reachActor', x: 340, maxY: 320 },
+  goal: { type: 'reachActor', x: 300, maxY: 320 },
   resetActorIfBelowY: 620,
-  guides: [{ x: 240 }],
+  guides: [{ x: 200 }],
   hints: {
-    highlight: [{ x: 234, y: 430, r: 22 }, { x: 250, y: 292, r: 18 }],
-    beamOutline: { x1: 180, y1: 424, x2: 258, y2: 424 },
+    highlight: [{ x: 142, y: 430, r: 22 }, { x: 250, y: 292, r: 18 }],
+    beamOutline: { x1: 108, y1: 424, x2: 176, y2: 424 },
   },
   scenery: [
     { kind: 'hills' },
@@ -4032,7 +4059,7 @@ const LEVEL_CH1_04 = {
     moleFail: 'l4_mole',
   },
   failHints: [
-    '他到墙根就停了——要把他送上去，不是送过去。',
+    '把板画在悬崖左边那块平地上——他踩上去才弹得起来。',
     '一块板自己不会弹。点「变硬」再点「怕痒」，它会把他弹起来。',
     '怕痒弹多高跟你画多粗没关系，画细点也一样。',
   ],
