@@ -905,6 +905,9 @@ export function boot() {
     retryLevel, nextLevel,
     skipIntro: endIntro,
     version: APP_VERSION,
+    // 性能三件套暴露给自测/诊断（tools/perf-probe.mjs 按 tier 压测要用；QA 也按名 grep）
+    perf: PerfGovernor,
+    quality: RenderQuality,
     schema: SAVE_SCHEMA_VERSION,
     key: SAVE_KEY_PROGRESS,
     lines: LINES,

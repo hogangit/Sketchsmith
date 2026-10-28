@@ -220,7 +220,7 @@ async function main() {
     process.exitCode = 1;
     return;
   }
-  console.log('\n[smoke] 全部通过：三关各自用参考解法真的走通，430×932 竖屏截图已存 dist/');
+  console.log('\n[smoke] 全部通过：5 关参考解法走通 + 沙盒画/存/复原，430×932 竖屏截图已存 dist/');
 }
 
 main().catch((e) => { console.error('[smoke] 异常：' + e.message); process.exitCode = 1; });

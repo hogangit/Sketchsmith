@@ -224,11 +224,14 @@
 
 | 判据 | 门槛 | 测试 |
 |---|---|---|
-| 解锁门禁 | `allCleared=false` 时标题页无入口；`=true` 时有 | `tests/sandbox-unlock.mjs` |
-| 持久化 | 存 5 个造物 → 刷新页面 → 仍在、字段一致 | `tests/sandbox-persist.mjs` |
-| 无 goal 不误判 | 沙盒场景 `goal=null` → 永不 `win`、永不 `fail` | `tests/sandbox-nogoal.mjs` |
-| 能力可贴 | 全部已解锁能力可点、每造物≤2 | `tests/sandbox-chips.mjs` |
-| 吐槽闭集 | 所有 `sb_toss*` 在 `lines.js` 存在且 ≤18 字、不进语音 | `tests/sandbox-lines.mjs`（复用 core.test 闭集断言） |
+| 解锁门禁 | `allCleared=false` 时标题页无入口；`=true` 时有 | `tests/sandbox-acceptance.mjs` 判据① |
+| 持久化 | 存 5 个造物 → 刷新页面 → 仍在、字段一致 | `tests/sandbox-acceptance.mjs` 判据② |
+| 无 goal 不误判 | 沙盒场景 `goal=null` → 永不 `win`、永不 `fail` | `tests/sandbox-acceptance.mjs` 判据③（含负对照） |
+| 能力可贴 | 全部已解锁能力可点、每造物≤2 | `tests/sandbox-acceptance.mjs` 判据④ |
+| 吐槽闭集 | 所有 `sb_toss*` 在 `lines.js` 存在且 ≤18 字、不进语音 | `tests/sandbox-acceptance.mjs` 判据⑤（textOnly 闭集，D28） |
+
+> 5 条判据合在一个文件里（共享 setup：node 侧 loadGameEnv），且**已全部通过**。
+> 另补真浏览器冒烟沙盒用例（`tools/smoke-browser.mjs`：画 1 笔 → 落盘 → retryLevel 重进 → 接回 ≥1 个 → 无误判）。
 
 ---
 
