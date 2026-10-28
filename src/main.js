@@ -12,6 +12,7 @@ import { SAVE_KEY_PROGRESS, SAVE_SCHEMA_VERSION, loadProgress, saveProgress } fr
 import { createLocalStorageSaveStore } from './platform/local-storage-save-store.js';
 import { createCanvasSurface, createStaticLayer } from './render/canvas.js';
 import { drawFarmer, drawFreehandStroke, drawPaper } from './render/handdrawn.js';
+import { drawSoilTexture, drawSoilTufts } from './render/scenery.js';
 import { chipIndexAt, drawHud, headerButtonAt, pickFailHint } from './render/hud.js';
 import { createStrokeCapture } from './stroke/capture.js';
 import { analyzeStrokeGroup } from './stroke/classify.js';
@@ -369,23 +370,17 @@ export function boot() {
       ctx.strokeStyle = '#5b5344';
       ctx.lineWidth = 2;
       ctx.strokeRect(-t.w / 2, -t.h / 2, t.w, t.h);
-      // 土：表土暗带 + 斜向土纹，避免地面读成一块纯色板
+      // 土：分层剖面纹理（art-polish-spec 3.3）——表土/层理/斜纹/碎石/根须/潮斑 + 地表草簇
+      // 静态层一次烘焙，零每帧开销；确定性 seed 保证同关重进布局一致
       if (!isIce) {
+        const seed = (lv.id || 'lv') + '#' + (t.x | 0) + ',' + (t.y | 0);
         ctx.save();
         ctx.beginPath();
         ctx.rect(-t.w / 2, -t.h / 2, t.w, t.h);
         ctx.clip();
-        ctx.fillStyle = 'rgba(120,104,74,0.30)';
-        ctx.fillRect(-t.w / 2, -t.h / 2, t.w, 9);
-        ctx.strokeStyle = 'rgba(110,96,70,0.26)';
-        ctx.lineWidth = 1;
-        for (let hx = -t.w / 2 - t.h; hx < t.w / 2; hx += 13) {
-          ctx.beginPath();
-          ctx.moveTo(hx, t.h / 2);
-          ctx.lineTo(hx + t.h, -t.h / 2);
-          ctx.stroke();
-        }
+        drawSoilTexture(ctx, t.w, t.h, RenderQuality.tier, seed);
         ctx.restore();
+        drawSoilTufts(ctx, t.w, t.h, RenderQuality.tier, seed);   // 草簇在 clip 外，可越过顶边
       }
       ctx.restore();
     }
