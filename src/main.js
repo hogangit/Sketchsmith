@@ -28,13 +28,13 @@ import { BodyBudget, StrokeBudget } from './physics/budget.js';
 import { createLevelRuntime } from './level/runtime.js';
 import { getAbility, IMPLEMENTED_ABILITY_IDS } from './abilities/registry.js';
 import { AudioBus } from './audio/audio-bus.js';
-import { canFitBeforeStamp, createLineQuota, estimateSpeechMs, isPerLevelLine, LINES, lineText, lineVoiceLevel, lineWho } from './text/lines.js';
+import { canFitBeforeStamp, createLineQuota, estimateSpeechMs, isPerLevelLine, isTextOnlyLine, LINES, lineText, lineVoiceLevel, lineWho } from './text/lines.js';
 import { LEVEL_CH1_01 } from './level/levels/ch1-01.js';
 import { LEVEL_CH1_02 } from './level/levels/ch1-02.js';
 import { LEVEL_CH1_03 } from './level/levels/ch1-03.js';
 import { LEVEL_CH1_04 } from './level/levels/ch1-04.js';
 import { LEVEL_CH1_05 } from './level/levels/ch1-05.js';
-import { SANDBOX_LEVEL, unlockSandbox } from './level/sandbox.js';
+import { SANDBOX_LEVEL, loadSandbox, saveCreature, unlockSandbox } from './level/sandbox.js';
 
 // 沙盒挂在数组末尾：通关最后一关后 nextLevel 会自然推进到它，不另开一套模式切换。
 // ⚠️ 因此「最后一关」永远是 GAME_LEVELS.length - 2（沙盒不算关）。
@@ -127,6 +127,13 @@ export function boot() {
     if (!text) return false;
     view.bubble = { who: lineWho(lineId), text, until: mainNow() + (ms || 2600) };
     lastBubbleKey = lineId;
+    // 纯文字台词（D28 闭集：环境吐槽 / 实验型对照）：**只出气泡，不进语音**。
+    // 这条以前只在 lines.js 的注释里写着，运行时照样送进 speak —— 规格 3.6
+    // 「sb_toss* 不进语音」没法验证。现在它是数据，在这里拦。
+    if (isTextOnlyLine(lineId)) {
+      bus.emit('text:bubble', { lineId, textOnly: true });
+      return true;
+    }
     // 有中文语音才出声；没有就静默走气泡（绝不拿英文嗓音念中文）。
     // 语音怎么排队（C5 挂起 / C4 延后 / 超时丢弃）由 AudioBus 内的 voice-scheduler 决定，
     // 这里只把"说话人、级别、朗读时长"三个事实交给它——扣额度发生在它那边 onstart。
@@ -135,7 +142,7 @@ export function boot() {
       level: lineVoiceLevel(lineId),
       textMs: estimateSpeechMs(text),
     });
-    if (AudioBus.voiceMode === 'bubble') bus.emit('text:bubble', { lineId });
+    if (AudioBus.voiceMode === 'bubble') bus.emit('text:bubble', { lineId, textOnly: false });
     return true;
   }
 
@@ -196,6 +203,7 @@ export function boot() {
   function sayFailLine(id) { sayCapped(id, 2600); }
 
   function currentLevel() { return GAME_LEVELS[view.levelIndex]; }
+  function inSandbox() { return !!view.level && view.level.id === 'sandbox'; }
 
   function buildWorld() {
     if (runtime) { try { runtime.destroy(); } catch (e) { /* noop */ } }
@@ -221,6 +229,7 @@ export function boot() {
     const key = GAME_CHAPTER_KEYS[view.levelIndex] || GAME_CHAPTER_KEYS[0];
     AudioBus.setKey(key.rootHz, key.mode);
     if (capture) capture.reset();
+    restoreSandboxCreatures();
   }
 
   function spawnFromStrokes(strokes) {
@@ -239,6 +248,56 @@ export function boot() {
       // levels.md 附录 A：落地形状分岔台词（6 条闭集），同句整局最多 2 次，超额静默不改写
       sayFormLine(analysis.form);
       view.snapshot = runtime.snapshot();
+      if (inSandbox()) saveSandboxCreature(c, strokes);
+    }
+  }
+
+  /**
+   * 沙盒落盘（规格 3.3/3.4：退场不丢）。
+   * 判据②只在模块层验过 saveCreature/loadSandbox，但**游戏里从来没调过**——
+   * 那是"单测绿着、功能不在"的典型陷阱，所以这里必须接。
+   */
+  function saveSandboxCreature(c, strokes) {
+    const rec = saveCreature(store, {
+      id: c.id,
+      form: c.form,
+      thickness: MAIN_THICKNESS,
+      abilities: (c.abilities || []).slice(0, 2),
+      name: '',
+      x: c.bodies && c.bodies[0] ? c.bodies[0].position.x : null,
+      y: c.bodies && c.bodies[0] ? c.bodies[0].position.y : null,
+      strokes,
+    });
+    if (!rec.ok && rec.reason === 'full') toast('造物园满了（30 个）。先删掉旧的。', 2600);
+  }
+
+  /**
+   * 进沙盒时把存档里的造物**复原出来**（不是只显示个列表）。
+   * 复原靠重跑 analyzeStrokeGroup(strokes)——所以 saveCreature 必须存笔画，
+   * 只存 form 是复原不出形状的。老记录（没存 strokes）跳过，不因为你而打不开沙盒。
+   */
+  function restoreSandboxCreatures() {
+    if (!inSandbox() || !runtime) return;
+    const saved = loadSandbox(store);
+    if (!saved.creatures.length) return;
+    let n = 0;
+    for (const c of saved.creatures) {
+      // ⚠️ 守卫看的是"至少有一条笔画、且这条笔画有 ≥2 个点"，不是"笔画条数 ≥2"。
+      //    绝大多数造物就是**单笔**画出来的（strokes.length === 1），写成 <2 会把它们全跳过。
+      const ok = Array.isArray(c.strokes) && c.strokes.some((s) => s && Array.isArray(s.pts) && s.pts.length >= 2);
+      if (!ok) continue;
+      try {
+        const analysis = analyzeStrokeGroup(c.strokes);
+        if (analysis.tooSmall) continue;
+        const made = runtime.spawnCreature({ form: analysis.form, geo: analysis, thickness: c.thickness || MAIN_THICKNESS });
+        if (!made) continue;
+        for (const a of (c.abilities || []).slice(0, 2)) runtime.setAbility(a);
+        n++;
+      } catch (e) { /* 一条记录坏了不能让整个沙盒打不开 */ }
+    }
+    if (n) {
+      view.snapshot = runtime.snapshot();
+      toast(`造物园：接回 ${n} 个旧造物。`, 2400);
     }
   }
 

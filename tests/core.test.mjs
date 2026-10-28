@@ -174,6 +174,14 @@ test('台词闭集：所有被引用的 id 都必须存在（含终态台词）�
   // 不可达的台词等于没有台词，而占位是负资产（和 ch1_stamp 同一类静默 bug）。
   assert.equal(LINES['l2_fail_beam'], undefined, '岸台面台词已删除（26 次实测 0 次可达）');
   assert.equal(LINES['l2_fail_ontop'], undefined, '造物顶面台词已删除（26 次实测 0 次可达）');
+  // 「纯文字、不朗读」闭集**双向**比对（D28）：漏标和误标都要红。
+  // 只查一边不够——只查"闭集里的都标了"抓不到某句偷偷标了 textOnly 却没进闭集；
+  // 只查"标了的都在闭集里"抓不到 sb_toss5 加了却忘了标。
+  const { TEXT_ONLY_LINE_IDS } = await import(pathToFileURL(path.join(ROOT, 'src/text/lines.js')).href);
+  const markedIds = Object.keys(LINES).filter((k) => LINES[k].textOnly === true).sort();
+  assert.deepEqual(markedIds, [...TEXT_ONLY_LINE_IDS].sort(),
+    'textOnly 标记与闭集不一致：漏标=' + TEXT_ONLY_LINE_IDS.filter((i) => !LINES[i] || !LINES[i].textOnly)
+    + ' 误标=' + markedIds.filter((i) => TEXT_ONLY_LINE_IDS.indexOf(i) < 0));
 });
 
 test('同句台词配额：第 3 次必须静默，不同 id 各算各的', async () => {

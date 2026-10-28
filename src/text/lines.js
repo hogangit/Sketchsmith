@@ -9,6 +9,25 @@
  *   · 关1 成功句必须在盖章音效**之前**念完；剩余时长 < 朗读时长 + 0.3s 则整句丢弃、只留盖章
  */
 
+/**
+ * 「纯文字、不朗读」的台词**闭集**（D28）。
+ *
+ * 为什么不能只在注释里写"纯文字"：注释管不住运行时。`showLine` 若不认这个标记，
+ * 这些句子照样会进 `AudioBus.speak()` —— 规格 3.6 的判据「sb_toss* 不进语音」就永远
+ * 只能靠人读代码来确认，加新句子时也没人拦得住。现在把它变成**数据**：
+ * `textOnly: true` 的条目由 `showLine` 在调 speak 之前 return，测试可断言。
+ *
+ * 用闭集而不是「谁写了 textOnly 就算」：这样"某句被误标"和"某句漏标"都会红——
+ * 见 `tests/sandbox-acceptance.mjs` 判据⑤（双向比对）。
+ */
+export const TEXT_ONLY_LINE_IDS = [
+  'l4_control_light', 'l4_mole',
+  'sb_toss1', 'sb_toss2', 'sb_toss3', 'sb_toss4',
+];
+export function isTextOnlyLine(id) {
+  return TEXT_ONLY_LINE_IDS.indexOf(id) >= 0;
+}
+
 export const LINES = {
   // 9.2 表：关卡开场 9 条中的第 1 章 3 条
   l1_intro: { who: '农夫', text: '你是谁？' },
@@ -22,9 +41,9 @@ export const LINES = {
   l4_intro: { who: '小人', text: '上面有我要的东西。我够不着。' },
   l4_win: { who: '小人', text: '我上来了。你怎么办到的？' },
   // 实验型对照（D20）：只解释「变轻管什么」，不审判玩家贴错
-  l4_control_light: { who: '小人', text: '变轻它只会飘，不会弹。' },
+  l4_control_light: { who: '小人', text: '变轻它只会飘，不会弹。', textOnly: true },
   // 鼹鼠评论员首登场：失败终态吐槽（纯文字，不朗读）
-  l4_mole: { who: '鼹鼠评论员', text: '这不是桥。这是犯罪。' },
+  l4_mole: { who: '鼹鼠评论员', text: '这不是桥。这是犯罪。', textOnly: true },
   // 9.2 表：关5（§levels-4-5-sandbox.md 2.7 表，逐字照抄）。
   // 「咬」字整条作废（咬合机关已废 + 儿童安全：鱼不咬人只顶人），三条统一为「顶」。
   l5_intro: { who: '小人', text: '河里有鱼。它爱顶人。' },
@@ -33,10 +52,10 @@ export const LINES = {
   // 沙盒「造物园」：开场一句（迎宾，走开场时机）+ 四条落地吐槽。
   // sb_toss* 一律**纯文字、不朗读**，且风格对齐「角色只自嘲、不评价玩家的画」。
   sb_intro: { who: '小人', text: '这里归你了。造吧。' },
-  sb_toss1: { who: '小人', text: '你又造了个我。我谢谢你。' },
-  sb_toss2: { who: '小人', text: '这玩意儿比上次的还圆。' },
-  sb_toss3: { who: '小人', text: '它落地了。它自己也吓一跳。' },
-  sb_toss4: { who: '小人', text: '又一个。我不问它是干嘛的。' },
+  sb_toss1: { who: '小人', text: '你又造了个我。我谢谢你。', textOnly: true },
+  sb_toss2: { who: '小人', text: '这玩意儿比上次的还圆。', textOnly: true },
+  sb_toss3: { who: '小人', text: '它落地了。它自己也吓一跳。', textOnly: true },
+  sb_toss4: { who: '小人', text: '又一个。我不问它是干嘛的。', textOnly: true },
   // levels.md 附录 A「落地形状分岔台词」6 条**闭集**，表外不许自拟；同句整局最多 2 次，超额静默
   form_beam: { who: '农夫', text: '这东西能踩吗？' },
   form_wheel: { who: '农夫', text: '圆的。它会自己跑。' },

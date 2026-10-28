@@ -181,6 +181,27 @@ async function main() {
       await evalJs('__WCWZ__.view.winAt=0; __WCWZ__.nextLevel(); 1');
     }
 
+    // ── 沙盒「造物园」：真浏览器里也要能进、能画、不误判、能接回旧造物 ──
+    // 判据同 tests/sandbox-acceptance.mjs，但那是 node 侧；这里补"页面真的会发生"。
+    await evalJs('__WCWZ__.view.levelIndex=5; __WCWZ__.retryLevel(); 1');
+    await sleep(400);
+    if (await evalJs('__WCWZ__.view.level.id') !== 'sandbox') failures.push('未能进入沙盒（level.id 不是 sandbox）');
+    await evalJs(`(()=>{const pts=[];const[x1,y1,x2,y2]=[150,700,280,704];const n=60;for(let i=0;i<=n;i++){const t=i/n;pts.push({x:x1+(x2-x1)*t+Math.sin(i*1.7)*0.7,y:y1+(y2-y1)*t+Math.cos(i*2.3)*0.7});}__WCWZ__.spawnFromStrokes([{pts}]);return 1;})()`);
+    await sleep(900);
+    const sb = await evalJs('JSON.stringify({n:__WCWZ__.runtime.creatures.length, s:__WCWZ__.view.snapshot.status, w:__WCWZ__.view.win, saved:(__WCWZ__.store.read("wcwz:sandbox:v1")||{creatures:[]}).creatures.length})');
+    const sbv = JSON.parse(sb);
+    if (sbv.n < 1) failures.push('沙盒里画了一笔却没有造物（creatures=' + sbv.n + '）');
+    if (sbv.w !== false) failures.push('沙盒误判通关（view.win=' + sbv.w + '）——沙盒没有"赢"');
+    if (sbv.saved < 1) failures.push('沙盒造物没有落盘（saved=' + sbv.saved + '）——持久化没接线');
+    // 重进沙盒：存档里的造物必须被**复原成实体**，不是只显示个数
+    await evalJs('__WCWZ__.retryLevel(); 1');
+    await sleep(900);
+    const sb2 = await evalJs('JSON.stringify({n:__WCWZ__.runtime.creatures.length, rec:(__WCWZ__.store.read("wcwz:sandbox:v1")||{creatures:[]}).creatures.map(c=>({f:c.form,s:(c.strokes||[]).length,pts:(c.strokes&&c.strokes[0]&&c.strokes[0].pts)?c.strokes[0].pts.length:-1}))})');
+    if (JSON.parse(sb2).n < 1) failures.push('重进沙盒后旧造物没接回来（creatures=' + JSON.parse(sb2).n + '，存档记录=' + JSON.stringify(JSON.parse(sb2).rec) + '）');
+    else console.log(`[smoke] 沙盒：画 1 笔→造物 ${sbv.n} 个 / 落盘 ${sbv.saved} 条 / 重进接回 ${JSON.parse(sb2).n} 个 / 无误判`);
+    const sbShot = await cdp.send('Page.captureScreenshot', { format: 'png' });
+    fs.writeFileSync(path.join(ROOT, 'dist', 'smoke-sandbox.png'), Buffer.from(sbShot.data, 'base64'));
+
     const errs = cdp.events.filter((e) => e.method === 'Runtime.exceptionThrown' ||
       (e.method === 'Runtime.consoleAPICalled' && e.params.type === 'error') ||
       (e.method === 'Log.entryAdded' && e.params.entry.level === 'error'));

@@ -86,10 +86,27 @@ export function saveCreature(store, creature) {
     name: creature.name || '',
     x: creature.x, y: creature.y,
     createdAt: Date.now(),
+    // ★ 存原始笔画，不只存 form：只存 form 是**复原不出形状**的（同一个 beam
+    //   可以是长是短是弯的）。规格 3.3「退场不丢」要的是"回来时东西还在原样"，
+    //   所以必须存笔画，进场时用 analyzeStrokeGroup 重跑一遍几何。
+    strokes: Array.isArray(creature.strokes) ? creature.strokes : [],
   };
   const next = { unlocked: true, creatures: cur.creatures.concat([rec]) };
   if (store && store.write) store.write(SANDBOX_KEY, next);
   return { ok: true, count: next.creatures.length };
+}
+
+/**
+ * 按 id 删一个造物。返回 `{ ok, reason }`。
+ * 为什么需要它：上限 30 满了以后，玩家只能"先删掉旧的"——不给他删的口子，
+ * 那条"不静默丢"的提示就是死路一条（告诉他有问题却不给办法）。
+ */
+export function removeCreature(store, id) {
+  const cur = loadSandbox(store);
+  const next = cur.creatures.filter((c) => c.id !== id);
+  if (next.length === cur.creatures.length) return { ok: false, reason: 'notfound', count: next.length };
+  if (store && store.write) store.write(SANDBOX_KEY, { unlocked: cur.unlocked, creatures: next });
+  return { ok: true, count: next.length };
 }
 
 /** 标记沙盒已解锁（通关第 5 关那一刻调用） */

@@ -4860,6 +4860,25 @@ const AudioBus = createAudioBus();
  *   · 关1 成功句必须在盖章音效**之前**念完；剩余时长 < 朗读时长 + 0.3s 则整句丢弃、只留盖章
  */
 
+/**
+ * 「纯文字、不朗读」的台词**闭集**（D28）。
+ *
+ * 为什么不能只在注释里写"纯文字"：注释管不住运行时。`showLine` 若不认这个标记，
+ * 这些句子照样会进 `AudioBus.speak()` —— 规格 3.6 的判据「sb_toss* 不进语音」就永远
+ * 只能靠人读代码来确认，加新句子时也没人拦得住。现在把它变成**数据**：
+ * `textOnly: true` 的条目由 `showLine` 在调 speak 之前 return，测试可断言。
+ *
+ * 用闭集而不是「谁写了 textOnly 就算」：这样"某句被误标"和"某句漏标"都会红——
+ * 见 `tests/sandbox-acceptance.mjs` 判据⑤（双向比对）。
+ */
+const TEXT_ONLY_LINE_IDS = [
+  'l4_control_light', 'l4_mole',
+  'sb_toss1', 'sb_toss2', 'sb_toss3', 'sb_toss4',
+];
+function isTextOnlyLine(id) {
+  return TEXT_ONLY_LINE_IDS.indexOf(id) >= 0;
+}
+
 const LINES = {
   // 9.2 表：关卡开场 9 条中的第 1 章 3 条
   l1_intro: { who: '农夫', text: '你是谁？' },
@@ -4873,9 +4892,9 @@ const LINES = {
   l4_intro: { who: '小人', text: '上面有我要的东西。我够不着。' },
   l4_win: { who: '小人', text: '我上来了。你怎么办到的？' },
   // 实验型对照（D20）：只解释「变轻管什么」，不审判玩家贴错
-  l4_control_light: { who: '小人', text: '变轻它只会飘，不会弹。' },
+  l4_control_light: { who: '小人', text: '变轻它只会飘，不会弹。', textOnly: true },
   // 鼹鼠评论员首登场：失败终态吐槽（纯文字，不朗读）
-  l4_mole: { who: '鼹鼠评论员', text: '这不是桥。这是犯罪。' },
+  l4_mole: { who: '鼹鼠评论员', text: '这不是桥。这是犯罪。', textOnly: true },
   // 9.2 表：关5（§levels-4-5-sandbox.md 2.7 表，逐字照抄）。
   // 「咬」字整条作废（咬合机关已废 + 儿童安全：鱼不咬人只顶人），三条统一为「顶」。
   l5_intro: { who: '小人', text: '河里有鱼。它爱顶人。' },
@@ -4884,10 +4903,10 @@ const LINES = {
   // 沙盒「造物园」：开场一句（迎宾，走开场时机）+ 四条落地吐槽。
   // sb_toss* 一律**纯文字、不朗读**，且风格对齐「角色只自嘲、不评价玩家的画」。
   sb_intro: { who: '小人', text: '这里归你了。造吧。' },
-  sb_toss1: { who: '小人', text: '你又造了个我。我谢谢你。' },
-  sb_toss2: { who: '小人', text: '这玩意儿比上次的还圆。' },
-  sb_toss3: { who: '小人', text: '它落地了。它自己也吓一跳。' },
-  sb_toss4: { who: '小人', text: '又一个。我不问它是干嘛的。' },
+  sb_toss1: { who: '小人', text: '你又造了个我。我谢谢你。', textOnly: true },
+  sb_toss2: { who: '小人', text: '这玩意儿比上次的还圆。', textOnly: true },
+  sb_toss3: { who: '小人', text: '它落地了。它自己也吓一跳。', textOnly: true },
+  sb_toss4: { who: '小人', text: '又一个。我不问它是干嘛的。', textOnly: true },
   // levels.md 附录 A「落地形状分岔台词」6 条**闭集**，表外不许自拟；同句整局最多 2 次，超额静默
   form_beam: { who: '农夫', text: '这东西能踩吗？' },
   form_wheel: { who: '农夫', text: '圆的。它会自己跑。' },
@@ -5474,10 +5493,27 @@ function saveCreature(store, creature) {
     name: creature.name || '',
     x: creature.x, y: creature.y,
     createdAt: Date.now(),
+    // ★ 存原始笔画，不只存 form：只存 form 是**复原不出形状**的（同一个 beam
+    //   可以是长是短是弯的）。规格 3.3「退场不丢」要的是"回来时东西还在原样"，
+    //   所以必须存笔画，进场时用 analyzeStrokeGroup 重跑一遍几何。
+    strokes: Array.isArray(creature.strokes) ? creature.strokes : [],
   };
   const next = { unlocked: true, creatures: cur.creatures.concat([rec]) };
   if (store && store.write) store.write(SANDBOX_KEY, next);
   return { ok: true, count: next.creatures.length };
+}
+
+/**
+ * 按 id 删一个造物。返回 `{ ok, reason }`。
+ * 为什么需要它：上限 30 满了以后，玩家只能"先删掉旧的"——不给他删的口子，
+ * 那条"不静默丢"的提示就是死路一条（告诉他有问题却不给办法）。
+ */
+function removeCreature(store, id) {
+  const cur = loadSandbox(store);
+  const next = cur.creatures.filter((c) => c.id !== id);
+  if (next.length === cur.creatures.length) return { ok: false, reason: 'notfound', count: next.length };
+  if (store && store.write) store.write(SANDBOX_KEY, { unlocked: cur.unlocked, creatures: next });
+  return { ok: true, count: next.length };
 }
 
 /** 标记沙盒已解锁（通关第 5 关那一刻调用） */
@@ -5614,6 +5650,13 @@ function boot() {
     if (!text) return false;
     view.bubble = { who: lineWho(lineId), text, until: mainNow() + (ms || 2600) };
     lastBubbleKey = lineId;
+    // 纯文字台词（D28 闭集：环境吐槽 / 实验型对照）：**只出气泡，不进语音**。
+    // 这条以前只在 lines.js 的注释里写着，运行时照样送进 speak —— 规格 3.6
+    // 「sb_toss* 不进语音」没法验证。现在它是数据，在这里拦。
+    if (isTextOnlyLine(lineId)) {
+      bus.emit('text:bubble', { lineId, textOnly: true });
+      return true;
+    }
     // 有中文语音才出声；没有就静默走气泡（绝不拿英文嗓音念中文）。
     // 语音怎么排队（C5 挂起 / C4 延后 / 超时丢弃）由 AudioBus 内的 voice-scheduler 决定，
     // 这里只把"说话人、级别、朗读时长"三个事实交给它——扣额度发生在它那边 onstart。
@@ -5622,7 +5665,7 @@ function boot() {
       level: lineVoiceLevel(lineId),
       textMs: estimateSpeechMs(text),
     });
-    if (AudioBus.voiceMode === 'bubble') bus.emit('text:bubble', { lineId });
+    if (AudioBus.voiceMode === 'bubble') bus.emit('text:bubble', { lineId, textOnly: false });
     return true;
   }
 
@@ -5683,6 +5726,7 @@ function boot() {
   function sayFailLine(id) { sayCapped(id, 2600); }
 
   function currentLevel() { return GAME_LEVELS[view.levelIndex]; }
+  function inSandbox() { return !!view.level && view.level.id === 'sandbox'; }
 
   function buildWorld() {
     if (runtime) { try { runtime.destroy(); } catch (e) { /* noop */ } }
@@ -5708,6 +5752,7 @@ function boot() {
     const key = GAME_CHAPTER_KEYS[view.levelIndex] || GAME_CHAPTER_KEYS[0];
     AudioBus.setKey(key.rootHz, key.mode);
     if (capture) capture.reset();
+    restoreSandboxCreatures();
   }
 
   function spawnFromStrokes(strokes) {
@@ -5726,6 +5771,56 @@ function boot() {
       // levels.md 附录 A：落地形状分岔台词（6 条闭集），同句整局最多 2 次，超额静默不改写
       sayFormLine(analysis.form);
       view.snapshot = runtime.snapshot();
+      if (inSandbox()) saveSandboxCreature(c, strokes);
+    }
+  }
+
+  /**
+   * 沙盒落盘（规格 3.3/3.4：退场不丢）。
+   * 判据②只在模块层验过 saveCreature/loadSandbox，但**游戏里从来没调过**——
+   * 那是"单测绿着、功能不在"的典型陷阱，所以这里必须接。
+   */
+  function saveSandboxCreature(c, strokes) {
+    const rec = saveCreature(store, {
+      id: c.id,
+      form: c.form,
+      thickness: MAIN_THICKNESS,
+      abilities: (c.abilities || []).slice(0, 2),
+      name: '',
+      x: c.bodies && c.bodies[0] ? c.bodies[0].position.x : null,
+      y: c.bodies && c.bodies[0] ? c.bodies[0].position.y : null,
+      strokes,
+    });
+    if (!rec.ok && rec.reason === 'full') toast('造物园满了（30 个）。先删掉旧的。', 2600);
+  }
+
+  /**
+   * 进沙盒时把存档里的造物**复原出来**（不是只显示个列表）。
+   * 复原靠重跑 analyzeStrokeGroup(strokes)——所以 saveCreature 必须存笔画，
+   * 只存 form 是复原不出形状的。老记录（没存 strokes）跳过，不因为你而打不开沙盒。
+   */
+  function restoreSandboxCreatures() {
+    if (!inSandbox() || !runtime) return;
+    const saved = loadSandbox(store);
+    if (!saved.creatures.length) return;
+    let n = 0;
+    for (const c of saved.creatures) {
+      // ⚠️ 守卫看的是"至少有一条笔画、且这条笔画有 ≥2 个点"，不是"笔画条数 ≥2"。
+      //    绝大多数造物就是**单笔**画出来的（strokes.length === 1），写成 <2 会把它们全跳过。
+      const ok = Array.isArray(c.strokes) && c.strokes.some((s) => s && Array.isArray(s.pts) && s.pts.length >= 2);
+      if (!ok) continue;
+      try {
+        const analysis = analyzeStrokeGroup(c.strokes);
+        if (analysis.tooSmall) continue;
+        const made = runtime.spawnCreature({ form: analysis.form, geo: analysis, thickness: c.thickness || MAIN_THICKNESS });
+        if (!made) continue;
+        for (const a of (c.abilities || []).slice(0, 2)) runtime.setAbility(a);
+        n++;
+      } catch (e) { /* 一条记录坏了不能让整个沙盒打不开 */ }
+    }
+    if (n) {
+      view.snapshot = runtime.snapshot();
+      toast(`造物园：接回 ${n} 个旧造物。`, 2400);
     }
   }
 
