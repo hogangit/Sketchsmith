@@ -661,6 +661,24 @@ D25 写「完全退回岸台面 = 不可推进，这是几何事实」。**"几�
 
 ---
 
+## D29 核心音效补齐（15/15）+ 奖励音稀缺性 + 沙盒清空（2026-10-29）
+
+**背景**：规格 3.1 核心 15 项只做了 8 个（pendown/spawn/ability/win/fail/stamp/collide/ui），缺的 7 个（penup/penmove/combo/fall/chapter/hint/bubble）没人检查过。另外沙盒只有 `removeCreature`（单条、无界面），存满 30 后玩家没有任何办法腾位置——上限是条死路。
+
+**决定**：
+| 项 | 内容 |
+|---|---|
+| 7 个新配方 | 全部按「stamp=0dB」基准换算 gain；`penmove` 规格给的 −24dB 折算幅度 0.022 在手机喇叭上听不见，取 0.030（仍是全表最轻、明显轻于 hint），绝对值待真机标定 |
+| `overlay` / `arp` 通用机制 | chapter 要"翻页噪声+低频落地"、fall 要"下滑音+噪声尾"、combo 要"三音琶音+shimmer"——都是配方表表达不了的多声部。解法是给配方表加**两个通用字段**（`overlay` 副声部 / `type:'arp'`），不为任何音效 id 开 if 分支，配方表保持纯数据 |
+| combo 每关一次（D29 核心） | 规格说 combo「稀缺性=奖励感」「全场唯一高亮度音色」。若每次组合都响，它会退化成"贴第二枚芯片的提示音"，奖励感归零。**每关只响第一次**，之后退回普通贴附音；进关重置 |
+| chapter 挂进沙盒 | 全作只有 1 章，挂在关卡推进上会每关都响，稀释意义；改挂"进入沙盒"（换玩法模式的那一刻） |
+| 沙盒「清空」按钮 | HUD 沙盒独占（`清空/确定？`），**二次确认 + 4s 自动解除**；`clearSandbox` 只删造物**保留 unlocked**——清园子不该把解锁状态也清掉 |
+| 音频句柄暴露 | `__WCWZ__.audio` 暴露给自测：冒烟在进沙盒那一刻拦 `play('chapter')`，证明接线是真的 |
+
+**验证**：`tests/audio-sfx.mjs` 9 项——①核心 15 项齐全 ②音量次序（stamp>combo>spawn>win>fail>penup>hint>penmove）③combo 是上行纯四度+纯五度三音+shimmer ④overlay 登记 ⑤真实 StrokeCapture 限流 ⑥⑦⑧combo/lost/hintLevel 事件实测会发 ⑨textOnly 闭集。`sandbox-acceptance` 6/6。修真 bug：penmove 限流初值 0，页面启动前 90ms 内第一笔永不响摩擦音（正确性不该依赖页面活了多久）。
+
+---
+
 ## 决策树进度
 
 | 分支 | 状态 |
