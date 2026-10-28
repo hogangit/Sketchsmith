@@ -4783,12 +4783,24 @@ function boot() {
     const lv = view.level;
     const rc = staticLayer.rough;
     ctx.save();
-    // 天空 / 地底
-    const sky = ctx.createLinearGradient(0, 0, 0, WORLD_H);
-    sky.addColorStop(0, '#e8dfca');
-    sky.addColorStop(1, '#f2ead8');
+    // 天空：4 档竖向渐变（顶浅→近地平最暖）——上半屏读成「清晨田野」而非灰板（art-polish 3.1）
+    const sky = ctx.createLinearGradient(0, 0, 0, 300);
+    sky.addColorStop(0, '#ECE4D2');    // P2
+    sky.addColorStop(0.55, '#E9DEC6');
+    sky.addColorStop(0.88, '#EFE0BE'); // 近地平最暖
+    sky.addColorStop(1, '#F1E6CC');
     ctx.fillStyle = sky;
     ctx.fillRect(0, 0, DESIGN_W, WORLD_H);
+    // 地平线晕染：贴 y=300 上方 46px 横向渐变带，按关卡主题换色（A1 晨光 / A2 集市暖尘 / A3 水塘冷调）
+    const WASH = { 'ch1-01': 'rgba(232,201,138,0.12)', 'ch1-02': 'rgba(196,150,96,0.10)', 'ch1-03': 'rgba(150,178,168,0.12)' };
+    const wash = WASH[lv.id];
+    if (wash) {
+      const wg = ctx.createLinearGradient(0, 254, 0, 300);
+      wg.addColorStop(0, 'rgba(0,0,0,0)');
+      wg.addColorStop(1, wash);
+      ctx.fillStyle = wg;
+      ctx.fillRect(0, 254, DESIGN_W, 46);
+    }
     ctx.fillStyle = '#e2d8c0';
     ctx.fillRect(0, BOOK_TOP, DESIGN_W, BOOK_H);
     // 地形
@@ -4872,13 +4884,32 @@ function boot() {
         ctx.lineWidth = 1.6;
         ctx.strokeRect(s.x - s.w / 2, s.y - s.h / 2, s.w, s.h);
       } else if (s.kind === 'hills') {
-        // 远山剪影 + 一朵云 + 两只鸟：不让天空留成纯空（空的部分会被读成“画面没加载完”）
+        // 三层远山（alpha 0.16/0.24/0.34，层间基线错开制造纵深）+ 最近层轮廓与树点 + 云 + 鸟（art-polish 3.1）
+        // 远层（最淡）
+        ctx.fillStyle = 'rgba(158,158,136,0.16)';
+        ctx.beginPath();
+        ctx.moveTo(-10, 300); ctx.lineTo(68, 240); ctx.lineTo(182, 300); ctx.closePath(); ctx.fill();
+        ctx.beginPath();
+        ctx.moveTo(248, 300); ctx.lineTo(352, 246); ctx.lineTo(440, 300); ctx.closePath(); ctx.fill();
+        // 中层
+        ctx.fillStyle = 'rgba(158,158,136,0.24)';
+        ctx.beginPath();
+        ctx.moveTo(56, 300); ctx.lineTo(180, 220); ctx.lineTo(304, 300); ctx.closePath(); ctx.fill();
+        // 近层（最深）
         ctx.fillStyle = 'rgba(158,158,136,0.34)';
         ctx.beginPath();
         ctx.moveTo(-10, 300); ctx.lineTo(96, 214); ctx.lineTo(206, 300); ctx.closePath(); ctx.fill();
-        ctx.fillStyle = 'rgba(158,158,136,0.22)';
         ctx.beginPath();
         ctx.moveTo(140, 300); ctx.lineTo(262, 236); ctx.lineTo(400, 300); ctx.closePath(); ctx.fill();
+        // 近层轮廓（I4）+ 树点
+        ctx.strokeStyle = 'rgba(90,84,70,0.38)';
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.moveTo(-10, 300); ctx.lineTo(96, 214); ctx.lineTo(206, 300); ctx.stroke();
+        ctx.fillStyle = 'rgba(90,84,70,0.40)';
+        for (const [tx, ty] of [[66, 266], [120, 248], [92, 278], [158, 272]]) {
+          ctx.beginPath(); ctx.arc(tx, ty, 1.5, 0, Math.PI * 2); ctx.fill();
+        }
         ctx.fillStyle = 'rgba(255,255,255,0.55)';
         ctx.beginPath();
         ctx.ellipse(318, 186, 34, 13, 0, 0, Math.PI * 2);
