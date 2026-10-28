@@ -183,8 +183,13 @@ async function main() {
 
     // ── 沙盒「造物园」：真浏览器里也要能进、能画、不误判、能接回旧造物 ──
     // 判据同 tests/sandbox-acceptance.mjs，但那是 node 侧；这里补"页面真的会发生"。
+    // 顺便拦 chapter 音：进沙盒＝换玩法模式，必须响一次「章节切换」。
+    await evalJs(`(()=>{const a=__WCWZ__.audio;const o=a.play.bind(a);window.__sfx=[];a.play=(id,op)=>{window.__sfx.push(id);return o(id,op);};return 1;})()`);
     await evalJs('__WCWZ__.view.levelIndex=5; __WCWZ__.retryLevel(); 1');
     await sleep(400);
+    const sfx = JSON.parse(await evalJs('JSON.stringify(window.__sfx||[])'));
+    if (!sfx.includes('chapter')) failures.push(`进沙盒没响 chapter 音（实际播了：${sfx.join(',') || '（无）'}）`);
+    else console.log(`[smoke] 进沙盒响 chapter 音 ✔（本次拦截到的音效：${sfx.join(',')}）`);
     if (await evalJs('__WCWZ__.view.level.id') !== 'sandbox') failures.push('未能进入沙盒（level.id 不是 sandbox）');
     await evalJs(`(()=>{const pts=[];const[x1,y1,x2,y2]=[150,700,280,704];const n=60;for(let i=0;i<=n;i++){const t=i/n;pts.push({x:x1+(x2-x1)*t+Math.sin(i*1.7)*0.7,y:y1+(y2-y1)*t+Math.cos(i*2.3)*0.7});}__WCWZ__.spawnFromStrokes([{pts}]);return 1;})()`);
     await sleep(900);

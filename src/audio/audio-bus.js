@@ -45,6 +45,30 @@ export const AUDIO_SFX_RECIPES = {
   spring: { type: 'tone', wave: 'sine', f0: 300, f1: 640, dur: 0.22, gain: 0.20, attack: 0.003, filter: { type: 'lowpass', f0: 2200, f1: 900, q: 0.9 } },
   // 关5 落水：环境水声——带通白噪，中心频率慢扫 400→1200Hz（水面感），[audio-spec 附录B sfx_water]
   water: { type: 'noise', noise: 'white', dur: 0.40, gain: 0.26, filter: { type: 'bandpass', f0: 400, f1: 1200, q: 1.0 }, attack: 0.03 },
+
+  // ── 规格 3.1 核心表补齐（D29）：音量按「盖章 stamp=0dB」基准换算 ──────────────
+  // 抬笔 −16dB：同落笔一路但更短、更高频、更陡，避免和落笔听混
+  penup: { type: 'noise', noise: 'white', dur: 0.05, gain: 0.15, filter: { type: 'bandpass', f0: 3600, f1: 2200, q: 1.4 }, attack: 0.001 },
+  // 笔迹摩擦 −24dB：全表最轻，只作「笔还在纸上」的存在感，不做节奏。
+  // 规格给的 −24dB 折成幅度只有 0.022，手机小喇叭上基本听不见；这里取 0.030，
+  // **仍是全表最轻、且明显轻于 hint（0.054）**，绝对 dB 待真机标定（规格本就是 [待实]）。
+  penmove: { type: 'noise', noise: 'white', dur: 0.06, gain: 0.030, filter: { type: 'bandpass', f0: 3200, f1: 3900, q: 2.2 }, attack: 0.004 },
+  // 造物坠落 −8dB：低频正弦下滑 + 轻噪声尾。**不做滑稽下滑音**（规格 3.1 硬规则）
+  fall: { type: 'tone', wave: 'sine', f0: 240, f1: 90, dur: 0.44, gain: 0.135, attack: 0.006,
+    filter: { type: 'lowpass', f0: 800, f1: 200, q: 0.8 },
+    overlay: { type: 'noise', noise: 'white', dur: 0.18, gain: 0.05, filter: { type: 'highpass', f0: 1200, f1: 600, q: 0.7 }, attack: 0.01 } },
+  // 章节/模式切换 −5dB：翻页噪声（高通上扫）+ 低频落地 thump（overlay）
+  chapter: { type: 'noise', noise: 'white', dur: 0.42, gain: 0.19, attack: 0.02,
+    filter: { type: 'highpass', f0: 600, f1: 2600, q: 0.7 },
+    overlay: { type: 'tone', wave: 'sine', f0: 150, f1: 70, dur: 0.30, gain: 0.16, attack: 0.004 } },
+  // 提示阶梯升级 −16dB：柔和 ping，音量刻意低（提示不该抢戏）
+  hint: { type: 'tone', wave: 'sine', f0: 880, f1: 880, dur: 0.50, gain: 0.054, attack: 0.02 },
+  // 文字气泡 −14dB：极短纸沙沙，decay 陡
+  bubble: { type: 'noise', noise: 'white', dur: 0.07, gain: 0.068, filter: { type: 'highpass', f0: 2000, f1: 4200, q: 0.8 }, attack: 0.002 },
+  // 能力组合奖励音 −2dB：全场唯一高亮度音色。纯四度+纯五度上行三音 + 高频 shimmer。
+  // 稀缺性就是奖励感——它必须在任何时刻都盖过碰撞音（3.4「sfx_combo 独占」）。
+  combo: { type: 'arp', wave: 'triangle', notes: [392, 523.25, 587.33], step: 0.085, noteDur: 0.46,
+    gain: 0.26, attack: 0.008, shimmer: [2093, 2637, 3136], shimmerDur: 0.34, shimmerGain: 0.045 },
 };
 
 const AUDIO_MODE_SCALES = {
@@ -153,58 +177,99 @@ export function createAudioBus() {
     nodeCount = Math.max(0, nodeCount + delta);
   }
 
-  function playRecipe(id, opts) {
-    const r = AUDIO_SFX_RECIPES[id];
-    if (!r || !ctx || !enabled) return false;
-    if (sfxLive >= AUDIO_MAX_SFX || nodeCount > AUDIO_NODE_BUDGET - 3) return false;
-    const t0 = ctx.currentTime + 0.001;
+  /**
+   * 起一个「声部」：src → gain →（可选 filter）→ masterGain。
+   * `overlay`（副振荡器）与 `arp`（琶音的每一个音）都复用它——两者都是**通用机制**，
+   * 不是为某个音效 id 开的分支，所以配方表仍然保持纯数据。
+   * 滤波器由 setTimeout 独立回收（与 onended 不同路径），避免重复 track。
+   */
+  function startVoice(spec, t0, volScale, onEnded) {
     const gain = ctx.createGain();
-    const vol = Math.max(0, Math.min(1, (r.gain || 0.2) * (opts && opts.score != null ? Math.min(1.4, 0.5 + opts.score / 8) : 1)));
+    const vol = Math.max(0, Math.min(1, (spec.gain || 0.2) * (volScale == null ? 1 : volScale)));
     gain.gain.setValueAtTime(0.0001, t0);
-    gain.gain.exponentialRampToValueAtTime(Math.max(0.0002, vol), t0 + (r.attack || 0.003));
-    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + r.dur);
-    let tail = gain;
-    if (r.filter) {
+    gain.gain.exponentialRampToValueAtTime(Math.max(0.0002, vol), t0 + (spec.attack || 0.003));
+    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + spec.dur);
+    if (spec.filter) {
       const bq = ctx.createBiquadFilter();
-      bq.type = r.filter.type || 'lowpass';
-      bq.frequency.setValueAtTime(r.filter.f0, t0);
-      bq.frequency.exponentialRampToValueAtTime(Math.max(40, r.filter.f1), t0 + r.dur);
-      bq.Q.value = r.filter.q || 1;
+      bq.type = spec.filter.type || 'lowpass';
+      bq.frequency.setValueAtTime(spec.filter.f0, t0);
+      bq.frequency.exponentialRampToValueAtTime(Math.max(40, spec.filter.f1), t0 + spec.dur);
+      bq.Q.value = spec.filter.q || 1;
       gain.connect(bq);
       bq.connect(masterGain);
-      tail = bq;
       track(1);
-      bq.addEventListener && bq.addEventListener('ended', () => {});
-      setTimeout(() => { try { bq.disconnect(); track(-1); } catch (e) { /* noop */ } }, (r.dur + 0.4) * 1000);
+      setTimeout(() => { try { bq.disconnect(); track(-1); } catch (e) { /* noop */ } }, (spec.dur + 0.4) * 1000);
     } else {
       gain.connect(masterGain);
     }
-    sfxLive++;
-    track(1);
     let src;
-    if (r.type === 'noise') {
+    if (spec.type === 'noise') {
       src = ctx.createBufferSource();
-      src.buffer = r.noise === 'brown' ? noiseBrown : noiseWhite;
+      src.buffer = spec.noise === 'brown' ? noiseBrown : noiseWhite;
       src.loop = false;
       src.connect(gain);
     } else {
       src = ctx.createOscillator();
-      src.type = r.wave || 'sine';
-      src.frequency.setValueAtTime(r.f0, t0);
-      if (r.f1 !== r.f0) src.frequency.exponentialRampToValueAtTime(Math.max(30, r.f1), t0 + r.dur);
+      src.type = spec.wave || 'sine';
+      src.frequency.setValueAtTime(spec.f0, t0);
+      if (spec.f1 !== spec.f0) src.frequency.exponentialRampToValueAtTime(Math.max(30, spec.f1), t0 + spec.dur);
       src.connect(gain);
     }
-    track(1);
+    track(2);                                   // gain + src
     src.onended = () => {
-      sfxLive = Math.max(0, sfxLive - 1);
       try { src.disconnect(); } catch (e) { /* noop */ }
       try { gain.disconnect(); } catch (e) { /* noop */ }
       track(-2);
-      if (tail === gain) { /* 滤波器已在 setTimeout 里回收 */ }
+      if (onEnded) onEnded();
     };
-    const stopAt = t0 + r.dur + 0.02;
     if (src.start) src.start(t0);
-    if (src.stop) src.stop(stopAt);
+    if (src.stop) src.stop(t0 + spec.dur + 0.02);
+    return true;
+  }
+
+  /**
+   * 琶音型（目前只有 `combo` 用）：上行三音错位起播 + 高频 shimmer。
+   * 规格 3.1 要求它是「全场唯一高亮度音色」，所以走 sine/triangle 泛音少、
+   * 高频 shimmer 加持；gain 上限已按 −2dB 换算，只低于盖章音。
+   */
+  function playArp(r, opts) {
+    sfxLive++;
+    const volScale = opts && opts.score != null ? Math.min(1.4, 0.5 + opts.score / 8) : 1;
+    const t0 = ctx.currentTime + 0.001;
+    const step = r.step || 0.08;
+    const notes = r.notes || [];
+    let done = 0;
+    const total = notes.length + (r.shimmer ? r.shimmer.length : 0);
+    const oneDown = () => {
+      done++;
+      if (done >= total) sfxLive = Math.max(0, sfxLive - 1);
+    };
+    notes.forEach((f, i) => {
+      startVoice({ type: 'tone', wave: r.wave || 'triangle', f0: f, f1: f, dur: r.noteDur || 0.45,
+        gain: r.gain || 0.2, attack: r.attack || 0.008 }, t0 + i * step, volScale, oneDown);
+    });
+    if (r.shimmer) {
+      r.shimmer.forEach((f, i) => {
+        // 随机相位：不用固定起播点，避免三个泛音叠成一条死板的「和弦柱」
+        startVoice({ type: 'tone', wave: 'sine', f0: f, f1: f, dur: r.shimmerDur || 0.3,
+          gain: r.shimmerGain || 0.04, attack: 0.004 }, t0 + (r.shimmerDelay || 0.02) + i * 0.055, 1, oneDown);
+      });
+    }
+    return true;
+  }
+
+  function playRecipe(id, opts) {
+    const r = AUDIO_SFX_RECIPES[id];
+    if (!r || !ctx || !enabled) return false;
+    if (sfxLive >= AUDIO_MAX_SFX || nodeCount > AUDIO_NODE_BUDGET - 3) return false;
+    if (r.type === 'arp') return playArp(r, opts);
+    const t0 = ctx.currentTime + 0.001;
+    const volScale = opts && opts.score != null ? Math.min(1.4, 0.5 + opts.score / 8) : 1;
+    sfxLive++;
+    startVoice(r, t0, volScale, () => { sfxLive = Math.max(0, sfxLive - 1); });
+    // 副声部（`overlay`）：与主声部同时起，给音效补「实体感 / 尾巴」，
+    // 例如 chapter 的翻页噪声 + 低频落地、fall 的下滑音 + 噪声尾。
+    if (r.overlay) startVoice(r.overlay, t0 + (r.overlayDelay || 0), volScale, null);
     return true;
   }
 

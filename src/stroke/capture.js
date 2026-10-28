@@ -12,6 +12,8 @@ import { BOOK_TOP, DESIGN_H, DESIGN_W } from '../core/config.js';
 import { SAMPLE_MIN_DIST, STROKE_MAX_POINTS, SUBMIT_COOLDOWN_MS } from './thresholds.js';
 
 const CAPTURE_GROUP_WINDOW_MS = 700;
+/** 笔迹摩擦音的限流间隔（规格 3.1 `sfx_penmove`：绘制中限流触发，≥[待实]ms 一次） */
+const CAPTURE_PENMOVE_MS = 90;
 
 export function createStrokeCapture(opts) {
   const audio = opts.audio;
@@ -25,6 +27,10 @@ export function createStrokeCapture(opts) {
   let drawing = false;
   let groupTimer = 0;
   let lastSubmit = -1e9;
+  // ⚠️ 不能初始化成 0：performance.now() 在页面刚启动的前 90ms 内小于限流间隔，
+  // 会让「第一笔永远不响摩擦音」——正确性不该依赖页面活了多久。每笔重置成 -1e9，
+  // 语义也更对：每一次新落笔都是一次新的笔尖接触，本来就该响。
+  let lastPenMove = -1e9;
   let enabled = true;
 
   function inBook(p) {
@@ -54,6 +60,7 @@ export function createStrokeCapture(opts) {
     const p = toDesign(ev.clientX, ev.clientY);
     if (!inBook(p)) return;
     drawing = true;
+    lastPenMove = -1e9;
     if (audio) audio.setDrawing(true);
     current = { pts: [p] };
     strokes.push(current);
@@ -71,6 +78,11 @@ export function createStrokeCapture(opts) {
     if (dx * dx + dy * dy < SAMPLE_MIN_DIST * SAMPLE_MIN_DIST) return;
     if (current.pts.length >= STROKE_MAX_POINTS) return;
     current.pts.push(p);
+    // 笔迹摩擦音：限流，不能每个采样点都响（那是噪音不是反馈）
+    if (audio && now() - lastPenMove >= CAPTURE_PENMOVE_MS) {
+      lastPenMove = now();
+      audio.play('penmove');
+    }
   }
 
   function end() {
@@ -82,6 +94,7 @@ export function createStrokeCapture(opts) {
       if (i >= 0) strokes.splice(i, 1);
     }
     current = null;
+    if (audio) audio.play('penup');
     bus.emit('stroke:end', {});
     if (strokes.length) scheduleCommit();
   }

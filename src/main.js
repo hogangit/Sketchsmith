@@ -115,6 +115,7 @@ export function boot() {
   let introActive = !Boot.introSkipped;
   let introT0 = mainNow();
   let introLineSaid = false;
+  let comboPlayedThisLevel = false;
   /** 结束扉页：跳到淡出段起点（不硬切，也不让玩家觉得点了没反应） */
   function endIntro() {
     if (!introActive) return;
@@ -214,6 +215,10 @@ export function boot() {
     // 音频唯一订阅点：碰撞音由物理侧每帧聚合、最多回调 1 次
     world.onImpact((evt) => AudioBus.play('collide', evt));
     view.level = currentLevel();
+    // 进入沙盒＝换一种玩法模式，给一次「章节切换」音（翻页+落地）。
+    // 全作只有 1 章，`sfx_chapter` 若挂在关卡推进上会每关都响，反而稀释了它的意义。
+    if (inSandbox()) AudioBus.play('chapter');
+    comboPlayedThisLevel = false;   // 奖励音的稀缺性按「每关一次」计（D29）
     runtime = createLevelRuntime({ level: view.level, world, bus });
     // 进关重置"每关"档配额：跨关兜底句（common_fail2 一类）的额度不能被前一关吃光，
     // 否则关3..关9 的"没预料到的终态"只剩余光和静默，等于把安全网关掉了。
@@ -356,6 +361,9 @@ export function boot() {
 
   function onFail(payload) {
     AudioBus.play(payload && payload.failSfx ? payload.failSfx : 'fail');
+    // 提示阶梯升级（第 2 次起）：柔和 ping，音量刻意低于失败音——提示不该抢戏，
+    // 也不该让玩家觉得"又错了"。它说的是"可以再试"，不是说"你做错了"。
+    if (payload && payload.hintLevel >= 2) AudioBus.play('hint');
     view.failFlash = 1;
     const lv = view.level;
     // 终态台词优先（D24/D25）：位置决定说哪句，判定只有一条。
@@ -372,6 +380,14 @@ export function boot() {
   bus.on('level:win', onWin);
   bus.on('level:fail', onFail);
   bus.on('creature:tickle', (e) => { if (e && e.actor) AudioBus.play('spring'); });  // 关4 弹射小人的弹簧音
+  bus.on('combo:trigger', () => {
+    // 奖励音每关只响一次（D29）：稀缺性就是奖励感。之后再组合退回普通贴附音，
+    // 不重复给——否则它会变成"贴第二枚芯片的提示音"，奖励感立刻归零。
+    AudioBus.play(comboPlayedThisLevel ? 'ability' : 'combo');
+    comboPlayedThisLevel = true;
+  });
+  bus.on('creature:lost', () => AudioBus.play('fall'));          // 造物掉出世界
+  bus.on('text:bubble', () => AudioBus.play('bubble'));          // 台词降级成气泡 / 吐槽字幕出现
   bus.on('plate:on', () => AudioBus.play('ability'));
   bus.on('ability:rejected', () => {
     AudioBus.play('ui');
@@ -908,6 +924,9 @@ export function boot() {
     // 性能三件套暴露给自测/诊断（tools/perf-probe.mjs 按 tier 压测要用；QA 也按名 grep）
     perf: PerfGovernor,
     quality: RenderQuality,
+    // 暴露给自测：冒烟要能在进沙盒那一刻拦到 AudioBus.play('chapter')，
+    // 证明「章节切换音」真的接上了，而不是只在源码里写着。
+    audio: AudioBus,
     schema: SAVE_SCHEMA_VERSION,
     key: SAVE_KEY_PROGRESS,
     lines: LINES,
