@@ -12,7 +12,7 @@ import { SAVE_KEY_PROGRESS, SAVE_SCHEMA_VERSION, loadProgress, saveProgress } fr
 import { createLocalStorageSaveStore } from './platform/local-storage-save-store.js';
 import { createCanvasSurface, createStaticLayer } from './render/canvas.js';
 import { drawFarmer, drawFreehandStroke, drawPaper } from './render/handdrawn.js';
-import { drawSoilTexture, drawSoilTufts } from './render/scenery.js';
+import { drawSoilTexture, drawSoilTufts, drawPaperGrain, drawSceneVignette } from './render/scenery.js';
 import { chipIndexAt, drawHud, headerButtonAt, pickFailHint } from './render/hud.js';
 import { createStrokeCapture } from './stroke/capture.js';
 import { analyzeStrokeGroup } from './stroke/classify.js';
@@ -566,6 +566,14 @@ export function boot() {
         ctx.textAlign = 'left';
       }
     }
+    // 纸面颗粒 + 暗角（art-polish 3.6）：只铺场景带 0..BOOK_TOP，正文/造物簿区不撒点
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, 0, DESIGN_W, BOOK_TOP);
+    ctx.clip();
+    if (RenderQuality.tier !== 'low') drawPaperGrain(ctx, DESIGN_W, BOOK_TOP, 'scene');
+    drawSceneVignette(ctx, DESIGN_W, BOOK_TOP);
+    ctx.restore();
     if (rc) { rc.rectangle(0, 0, 1, 1, { stroke: 'none' }); }
     ctx.restore();
   }

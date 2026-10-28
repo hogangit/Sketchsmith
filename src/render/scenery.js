@@ -164,3 +164,29 @@ export function drawSoilTufts(ctx, w, h, tier, seedKey) {
     ctx.stroke();
   }
 }
+
+/**
+ * 纸面颗粒（art-polish 3.6）：确定性撒 ~160 个 1px 点，给「纸的牙口」。
+ * 只在场景带内调用（正文/造物簿区不撒点，保证文字可读）。low 档由调用方决定是否跳过。
+ */
+export function drawPaperGrain(ctx, w, h, seedKey) {
+  const rng = makeRng(hashStr((seedKey || 'scene') + ':grain'));
+  ctx.fillStyle = 'rgba(60,52,40,0.05)';
+  const n = Math.round((w * h) / 1400);     // 面积自适应，约 160 个 @430×513
+  for (let i = 0; i < n; i++) {
+    const x = Math.floor(rng() * w);
+    const y = Math.floor(rng() * h);
+    ctx.fillRect(x, y, 1, 1);
+  }
+}
+
+/**
+ * 场景暗角（art-polish 3.6）：径向渐变，中心透明 → 四角极淡压暗，增强聚焦。
+ */
+export function drawSceneVignette(ctx, w, h) {
+  const g = ctx.createRadialGradient(w / 2, h * 0.42, h * 0.18, w / 2, h * 0.42, h * 0.82);
+  g.addColorStop(0, 'rgba(60,50,36,0)');
+  g.addColorStop(1, 'rgba(60,50,36,0.06)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, w, h);
+}
