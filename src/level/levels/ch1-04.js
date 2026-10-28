@@ -50,14 +50,21 @@ export const LEVEL_CH1_04 = {
   },
   scenery: [
     { kind: 'hills' },
+    // 本关有风（art-polish 第四章）：风线 + 农夫帽檐微动
+    { kind: 'wind', y: 240 },
     // 低地地平线 + 高台顶面线：两条不同高度的水平线 = 「上不去」这件事一眼可见
     { kind: 'line', x1: 0, y1: 430, x2: 240, y2: 430, width: 2.5 },
     { kind: 'line', x1: 240, y1: 300, x2: 430, y2: 300, width: 2.5 },
     // 低地草丛：鼹鼠评论员的藏身处（失败吐槽从这儿冒出来）
     { kind: 'crops', x1: 18, x2: 58, y: 430, n: 3, h: 10 },
     { kind: 'crops', x1: 190, x2: 230, y: 430, n: 2, h: 8 },
+    // 低地干裂纹 + 草垛：这半边是被晒裂的荒地（与高台上的"好地"对照）
+    { kind: 'cracks', x1: 12, x2: 92, y: 446 },
+    { kind: 'haystack', x: 84, y: 430, w: 24, h: 13 },
     // 高台：矮土垄 + 木牌，让它读成「上面有东西」而不是一块空白方块
     { kind: 'ridge', x1: 242, x2: 428, y: 300, h: 9 },
+    // 台顶布幡：目标方向有旗，读成"高台那头有集市"
+    { kind: 'pennant', x: 402, y: 300, h: 52, flags: 2 },
     { kind: 'sign', x: 300, y: 300, text: '？' },
     { kind: 'text', x: 330, y: 268, text: '我要的东西', size: 10, align: 'center' },
     { kind: 'text', x: 118, y: 476, text: '上不去', size: 10, align: 'center', tone: 'light' },

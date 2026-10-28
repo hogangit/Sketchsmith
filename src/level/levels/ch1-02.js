@@ -60,12 +60,25 @@ export const LEVEL_CH1_02 = {
   },
   scenery: [
     // 纯标记、不绘制：声明本关「有风」，驱动农夫帽檐微动（F4）与横向风线动效（art-polish 四章）
-    { kind: 'wind' },
+    { kind: 'wind', y: 238 },
+    // L2-3 远景摊位剪影：沟后方两个矮摊，背景不空
+    { kind: 'stall', x: 232, y: 288, w: 44, h: 22 },
+    { kind: 'stall', x: 296, y: 286, w: 36, h: 19 },
     { kind: 'chasm', x1: 200, x2: 330, y: 300, depth: 170 },
     { kind: 'line', x1: 0, y1: 300, x2: 200, y2: 300, width: 2.5 },
     { kind: 'line', x1: 330, y1: 300, x2: 430, y2: 300, width: 2.5 },
     { kind: 'rect', x: 245, y: 462, w: 84, h: 16 },
+    // L2-5 收货口棚布：褶线 + 扇贝边 + 微赭 wash，读成软棚布而非木框
+    { kind: 'canopyfold', x: 245, y: 462, w: 84, h: 16 },
     { kind: 'crops', x1: 212, x2: 278, y: 470, n: 3, h: 7 },
+    // L2-1 布幡：杆在左岸；旗面每帧摆动（动态层）
+    { kind: 'pennant', x: 92, y: 300, h: 58, flags: 2 },
+    // L2-2 草垛：南瓜岸两垛
+    { kind: 'haystack', x: 56, y: 300, w: 26, h: 15 },
+    { kind: 'haystack', x: 150, y: 300, w: 22, h: 12 },
+    // L2-4 沟沿木桩 + 垂绳：桩必须落在岸上（左岸 x<200 / 右岸 x>330），不能悬在沟里
+    { kind: 'stakes', h: 12, posts: [[196, 300], [182, 300]], rope: [[182, 300], [196, 300]], sag: 6 },
+    { kind: 'stakes', h: 12, posts: [[334, 300], [348, 300]], rope: [[334, 300], [348, 300]], sag: 6 },
     { kind: 'text', x: 245, y: 447, text: '收货口', size: 10, align: 'center', tone: 'light' },
     { kind: 'text', x: 200, y: 497, text: '石头', size: 9, align: 'center', tone: 'light' },
     { kind: 'text', x: 298, y: 497, text: '石头', size: 9, align: 'center', tone: 'light' },

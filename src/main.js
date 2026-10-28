@@ -12,7 +12,12 @@ import { SAVE_KEY_PROGRESS, SAVE_SCHEMA_VERSION, loadProgress, saveProgress } fr
 import { createLocalStorageSaveStore } from './platform/local-storage-save-store.js';
 import { createCanvasSurface, createStaticLayer } from './render/canvas.js';
 import { drawFarmer, drawFreehandStroke, drawPaper } from './render/handdrawn.js';
-import { drawSoilTexture, drawSoilTufts, drawPaperGrain, drawSceneVignette } from './render/scenery.js';
+import {
+  drawSoilTexture, drawSoilTufts, drawPaperGrain, drawSceneVignette,
+  drawSc_PitDepth, drawSc_Haystack, drawSc_Stall, drawSc_Stakes, drawSc_CanopyFold,
+  drawSc_PennantPole, drawSc_Water, drawSc_Reeds, drawSc_Rust, drawSc_Cracks,
+  drawAmbient,
+} from './render/scenery.js';
 import { drawTitleCard } from './render/title-card.js';
 import { drawAbout } from './render/about.js';
 import { chipIndexAt, drawHud, headerButtonAt, pickFailHint } from './render/hud.js';
@@ -460,7 +465,10 @@ export function boot() {
       ctx.restore();
     }
     // 布景
-    for (const s of lv.scenery || []) {
+    const sceneryList = lv.scenery || [];
+    for (let si = 0; si < sceneryList.length; si++) {
+      const s = sceneryList[si];
+      const skey = (lv.id || 'lv') + '#' + s.kind + si;
       if (s.kind === 'line') {
         ctx.save();
         if (s.dash) ctx.setLineDash([4, 5]);
@@ -519,6 +527,33 @@ export function boot() {
         bird(104, 152, 4.5);
         bird(146, 132, 3.6);
         bird(372, 150, 3.2);
+      } else if (s.kind === 'haystack') {
+        // L1-4 / L2-2 草垛：垛体 + 放射草纹 + 地面散稻草
+        drawSc_Haystack(ctx, s, skey);
+      } else if (s.kind === 'stall') {
+        // L2-3 远景摊位剪影：背景不空
+        drawSc_Stall(ctx, s);
+      } else if (s.kind === 'stakes') {
+        // L2-4 沟沿木桩 + 垂绳：强化"别掉下去"
+        drawSc_Stakes(ctx, s, RenderQuality.tier);
+      } else if (s.kind === 'canopyfold') {
+        // L2-5 收货口棚布褶：读成软棚布而非木框
+        drawSc_CanopyFold(ctx, s, RenderQuality.tier);
+      } else if (s.kind === 'pennant') {
+        // L2-1 布幡：静态画杆；旗面每帧由 drawAmbient 摆动
+        drawSc_PennantPole(ctx, s);
+      } else if (s.kind === 'water') {
+        // L3-1 水塘：静态底 + 波纹；高光每帧由 drawAmbient 平移
+        drawSc_Water(ctx, s, skey);
+      } else if (s.kind === 'reeds') {
+        // L3-2 芦苇/香蒲：静态画全丛；其中 2 根每帧由 drawAmbient 摆尖
+        drawSc_Reeds(ctx, s, skey);
+      } else if (s.kind === 'rust') {
+        // L3-4 泵体锈迹 + 苔藓 + 滴线
+        drawSc_Rust(ctx, s, RenderQuality.tier);
+      } else if (s.kind === 'cracks') {
+        // L3-5 干裂纹 + 翘起土片
+        drawSc_Cracks(ctx, s, skey, RenderQuality.tier);
       } else if (s.kind === 'chasm') {
         // 又深又暗的沟：明确“下去就上不来”，并在沟壁上放几块碎石
         const g = ctx.createLinearGradient(0, s.y, 0, s.y + (s.depth || 80));
@@ -535,6 +570,8 @@ export function boot() {
         ctx.lineWidth = 2;
         ctx.beginPath(); ctx.moveTo(s.x1, s.y); ctx.lineTo(s.x1, s.y + (s.depth || 80)); ctx.stroke();
         ctx.beginPath(); ctx.moveTo(s.x2, s.y); ctx.lineTo(s.x2, s.y + (s.depth || 80)); ctx.stroke();
+        // L1-5：洞口不再是"贴了块黑胶布"——上沿高光 + 内壁竖纹 + 口沿边缘石（art-polish 4.1）
+        drawSc_PitDepth(ctx, s, (lv.id || 'lv') + '#pit' + (s.x1 | 0), RenderQuality.tier);
       } else if (s.kind === 'crops') {
         // 作物：竖杆 + 三叉穗 + 一片叶；三笔就能认成"庄稼"
         const n = s.n || 3;
@@ -733,6 +770,9 @@ export function boot() {
     staticLayer.ensure(drawStatics);
     staticLayer.blit(ctx);
     drawBodies(ctx, t);
+    // 动态布景（风/水光/涟漪/旗摆/芦苇摆）夹在造物与造物簿之间：
+    // 它在造物之上（水光能盖住造物边缘，读起来才像"泡在水里"），但绝不越界进造物簿。
+    drawAmbient(ctx, view.level, t / 1000, RenderQuality.tier, BOOK_TOP);
     drawBook(ctx);
     drawHud(ctx, view);
     // 关于浮层：在 HUD 之上、扉页之下（开场时打不开，所以不会被扉页盖住）

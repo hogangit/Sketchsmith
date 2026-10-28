@@ -37,6 +37,9 @@ export const LEVEL_CH1_01 = {
     { kind: 'crops', x1: 104, x2: 124, y: 430, n: 2, h: 9 },
     // 右岸＝他的田：矮土垄 + 三根作物 + 木牌（三样东西一眼认成田）
     { kind: 'ridge', x1: 336, x2: 428, y: 430, h: 9 },
+    // L1-4 草垛：田侧两垛，让地表不再是一条直线（art-polish 4.1）
+    { kind: 'haystack', x: 66, y: 430, w: 28, h: 16 },
+    { kind: 'haystack', x: 348, y: 430, w: 24, h: 13 },
     { kind: 'crops', x1: 372, x2: 420, y: 430, n: 3, h: 26 },
     { kind: 'sign', x: 353, y: 430, text: '田' },
     { kind: 'text', x: 382, y: 480, text: '他的田', size: 10, align: 'center' },

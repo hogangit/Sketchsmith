@@ -53,10 +53,19 @@ export const LEVEL_CH1_05 = {
   },
   scenery: [
     { kind: 'hills' },
+    // 本关有风：河面水汽 + 农夫帽檐微动
+    { kind: 'wind', y: 240 },
     // 两岸地平线同高 y=300，中间是河：一眼看出「河把两岸分开」
     { kind: 'line', x1: 0, y1: 300, x2: 150, y2: 300, width: 2.5 },
     { kind: 'line', x1: 280, y1: 300, x2: 430, y2: 300, width: 2.5 },
     { kind: 'chasm', x1: 150, x2: 280, y: 300, depth: 170 },
+    // 河水：盖在黑沟上部的水带（W0），下半仍是暗的 = 深水；高光每帧轻微平移
+    { kind: 'water', x: 215, y: 306, w: 128, h: 40 },
+    // 涟漪：河中央（动态层）
+    { kind: 'ripple', x: 215, y: 338 },
+    // 对岸芦苇 + 布幡：目标侧有旗，读成"对岸有去处"
+    { kind: 'reeds', x1: 288, x2: 356, y: 300, n: 6, h: 26, sway: [1, 4] },
+    { kind: 'pennant', x: 392, y: 300, h: 52, flags: 2 },
     { kind: 'crops', x1: 20, x2: 52, y: 300, n: 3, h: 9 },
     { kind: 'crops', x1: 300, x2: 340, y: 300, n: 2, h: 8 },
     { kind: 'text', x: 215, y: 452, text: '河水', size: 10, align: 'center', tone: 'light' },
