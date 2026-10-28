@@ -260,3 +260,24 @@ L3 团块+变重 → 过关（1.8s, form=wheel）
 | `PLATE.threshold` / `sustainMs` | `materials.js` + 关3 数据 | 变重必压、不变重必不压 |
 | `SOFT_BEAM_STIFFNESS` | `materials.js` | 软梁必须塌、且塌得好看 |
 | 语音同说话人冷却 45s | `audio-bus.js` | 需等第 1 章三关都能跑后由音频侧实测 |
+
+---
+
+## 九、许可证
+
+本项目以 **MIT** 许可发布，全文见 [`LICENSE`](LICENSE)。
+
+选 MIT 的依据：四个第三方依赖全部是 MIT，无传染性（不要求本项目跟着别人的协议走）、无 NOTICE 附加义务、无专利条款摩擦，
+且 MIT 是**非独占**授权——它允许别人复用，但不会妨碍作者本人继续商业化。
+
+第三方库（均为 MIT，完整版权与许可正文见 `vendor/`，合并副本 `vendor/LICENSES.txt`）：
+
+| 库 | 用途 | 许可 | 版权 |
+|---|---|---|---|
+| matter-js 0.20.0 | 2D 刚体物理 | MIT | Liam Brummitt and contributors |
+| poly-decomp | 凹多边形分解 | MIT | Stefan Hedman |
+| roughjs 4.6.6 | 手绘线条 | MIT | Preet Shihn |
+| perfect-freehand 1.2.3 | 笔迹平滑 | MIT | Stephen Ruiz Ltd |
+
+> 单文件产物 `dist/game.html` 已把上述四份许可正文**内联在产物内**，
+> 因此把 `game.html` 单独分发（双击、发群、丢网盘）也满足 MIT 的「保留版权与许可声明」义务，不需要额外附带文件。
