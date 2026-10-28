@@ -14,6 +14,7 @@ import { createCanvasSurface, createStaticLayer } from './render/canvas.js';
 import { drawFarmer, drawFreehandStroke, drawPaper } from './render/handdrawn.js';
 import { drawSoilTexture, drawSoilTufts, drawPaperGrain, drawSceneVignette } from './render/scenery.js';
 import { drawTitleCard } from './render/title-card.js';
+import { drawAbout } from './render/about.js';
 import { chipIndexAt, drawHud, headerButtonAt, pickFailHint } from './render/hud.js';
 import { createStrokeCapture } from './stroke/capture.js';
 import { analyzeStrokeGroup } from './stroke/classify.js';
@@ -74,6 +75,7 @@ export function boot() {
     impactDebug: null,
     bubble: null,
     win: false,
+    about: false,
     winAt: 0,
     failFlash: 0,
     fps: 60,
@@ -310,6 +312,8 @@ export function boot() {
 
   // ---- 输入 ----
   function handleUiTap(x, y) {
+    // 「关于」展开时任何点击都先关掉它——让玩家去瞄「知道了」是多余的一步
+    if (view.about) { view.about = false; AudioBus.play('ui'); return true; }
     if (view.win) {
       if (mainNow() - view.winAt < 600) return true;
       if (view.levelIndex >= GAME_LEVELS.length - 1) { view.levelIndex = 0; buildWorld(); say(view.level.lines.intro, 3200); }
@@ -317,6 +321,7 @@ export function boot() {
       return true;
     }
     const btn = headerButtonAt(x, y);
+    if (btn === 'about') { view.about = true; AudioBus.play('ui'); return true; }
     if (btn === 'retry') { AudioBus.play('ui'); retryLevel(); return true; }
     if (btn === 'audio') {
       view.audioOn = !view.audioOn;
@@ -681,7 +686,7 @@ export function boot() {
       say(view.level.lines.intro, 3200);   // 开场句：扉页落下那一刻，仅一句
     }
     const physStart = mainNow();
-    if (runtime && introActive) { /* 扉页期间冻结物理 */ }
+    if (runtime && (introActive || view.about)) { /* 扉页 / 关于展开期间冻结物理：否则读文档时小人已经掉下去了 */ }
     else if (runtime && view.win === false) runtime.step(Math.max(0, Math.min(3, steps)));
     else if (runtime && steps > 0) runtime.step(0);
     const physMs = mainNow() - physStart;
@@ -703,6 +708,8 @@ export function boot() {
     drawBodies(ctx);
     drawBook(ctx);
     drawHud(ctx, view);
+    // 关于浮层：在 HUD 之上、扉页之下（开场时打不开，所以不会被扉页盖住）
+    if (view.about) drawAbout(ctx, view);
     // 扉页画在最后一层：它要盖住 HUD，否则开场时芯片/进度条会和标题抢读
     if (introActive) {
       const el = t - introT0;

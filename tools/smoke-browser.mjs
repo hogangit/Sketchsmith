@@ -123,6 +123,24 @@ async function main() {
     await evalJs('try{__WCWZ__.skipIntro();}catch(e){}; 1');
     await sleep(460);   // 等淡出走完，关卡截图不带遮罩
 
+    // 「关于/许可」浮层：用真实鼠标事件点按钮，验证命中区与开关都成立
+    // （直接改 view.about 是假验证——那只证明字段能赋值，不证明按钮点得到）
+    const click = async (x, y) => {
+      await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount: 1 });
+      await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 });
+    };
+    await click(305, 71);   // HUD「关于」按钮（x=280..330, y=54..88 的中心）
+    await sleep(300);
+    if (await evalJs('__WCWZ__.view.about === true') !== true) {
+      failures.push('「关于」按钮点击未命中（view.about 仍为 false）');
+    } else {
+      const aboutShot = await cdp.send('Page.captureScreenshot', { format: 'png' });
+      fs.writeFileSync(path.join(ROOT, 'dist', 'smoke-about.png'), Buffer.from(aboutShot.data, 'base64'));
+      await click(215, 420);   // 卡片内部任意处
+      await sleep(220);
+      if (await evalJs('__WCWZ__.view.about === false') !== true) failures.push('「关于」浮层点击后未关闭');
+      else console.log('[smoke] 关于/许可浮层 → 打开 + 任点关闭 OK');
+    }
     // 扉页把开场句的播放时机推后了（原本 build 后 240ms 就说），必须证明它没被吞：
     // 判据是「气泡真的出现了且非空」，不是「setTimeout 被调用过」。
     const bub = await evalJs('JSON.stringify(__WCWZ__.view.bubble||null)');

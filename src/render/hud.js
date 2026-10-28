@@ -43,11 +43,12 @@ export function buttonAt(x, y) {
   return null;   // 重来/声音按钮已挪进标题行下方 40 内，见 drawHud 的 hitRect
 }
 
-/** 标题行右下角的两个小按钮命中区（与 drawHud 中的绘制保持一致） */
+/** 标题行右下角的三个小按钮命中区（与 drawHud 中的绘制保持一致） */
 export function headerButtonAt(x, y) {
   if (y < 52 || y > 92) return null;
   if (x > DESIGN_W - 46 && x < DESIGN_W - 10) return 'audio';
   if (x > DESIGN_W - 96 && x < DESIGN_W - 50) return 'retry';
+  if (x > DESIGN_W - 152 && x < DESIGN_W - 100) return 'about';
   return null;
 }
 
@@ -95,13 +96,15 @@ export function drawHud(ctx, view) {
     ctx.fillText(ABILITY_LABELS[id] || id, r.x + 11, r.y + 22);
   }
 
-  // 重来 / 声音：标题行下方，不与场景争位置
+  // 重来 / 声 / 关于：标题行下方，不与场景争位置
   ctx.strokeStyle = 'rgba(90,80,64,0.45)';
   ctx.lineWidth = 1.3;
+  roundRect(ctx, DESIGN_W - 150, 54, 50, 34, 8); ctx.stroke();
   roundRect(ctx, DESIGN_W - 96, 54, 46, 34, 8); ctx.stroke();
   roundRect(ctx, DESIGN_W - 46, 54, 36, 34, 8); ctx.stroke();
   ctx.fillStyle = '#5d5446';
   ctx.font = '12px system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif';
+  ctx.fillText('关于', DESIGN_W - 137, 76);
   ctx.fillText('重来', DESIGN_W - 88, 76);
   ctx.fillText(view.audioOn ? '声' : '静', DESIGN_W - 34, 76);
 

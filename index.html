@@ -1052,6 +1052,149 @@ function drawTitleCard(ctx, opt) {
   ctx.restore();
 }
 ;
+/* src/render/about.js */
+/**
+ * src/render/about.js —— 「关于 / 许可」浮层
+ *
+ * 为什么要有：MIT 要求「保留版权与许可声明」，而许可正文目前只躺在产物的那个
+ * text/plain 许可块里——合规但玩家看不到。这里给一个能点到的入口，
+ * 把「谁做的 / 什么许可 / 用了谁的库」摊开写清楚。
+ *
+ * 纯绘制 + 布局常量，无状态、无监听；开关状态由 main.js 的 view.about 持有。
+ *
+ * ⚠️ 顶层名一律加 ABT_ 前缀：本项目走 fallback-concat（纯拼接，无模块作用域隔离），
+ * 构建门禁 D3 会拦「顶层名重复」。INK / roundRect 这些通用名会与 title-card.js、hud.js 撞。
+ */
+
+
+const ABT_INK = '#38312a';
+const ABT_INK_MID = 'rgba(56,49,42,0.70)';
+const ABT_INK_SOFT = 'rgba(56,49,42,0.46)';
+const ABT_CARD = '#f7f2e4';
+const ABT_UI = 'system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif';
+const ABT_SERIF = '"Songti SC","Noto Serif SC","Source Han Serif SC",serif';
+
+/** 卡片几何（main.js 的命中判定与绘制共用，避免两处写死坐标对不上） */
+const ABOUT_CARD = { x: 40, y: 236, w: DESIGN_W - 80, h: 372 };
+/** 「知道了」按钮 */
+function aboutCloseRect() {
+  return { x: DESIGN_W / 2 - 54, y: ABOUT_CARD.y + ABOUT_CARD.h - 56, w: 108, h: 34 };
+}
+
+function abtRoundRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+/** 左侧标签 + 右侧值，返回下一行的 y */
+function abtKv(ctx, label, value, y, x) {
+  ctx.font = `11px ${ABT_UI}`;
+  ctx.fillStyle = ABT_INK_SOFT;
+  ctx.textAlign = 'left';
+  ctx.fillText(label, x, y);
+  ctx.font = `12px ${ABT_UI}`;
+  ctx.fillStyle = ABT_INK;
+  ctx.fillText(value, x + 46, y);
+  return y + 22;
+}
+
+/**
+ * @param {CanvasRenderingContext2D} ctx  design 坐标系
+ * @param {object} view  只用 view.version
+ */
+function drawAbout(ctx, view) {
+  const c = ABOUT_CARD;
+  ctx.save();
+
+  // 遮罩：让底下关卡退后，但不全黑（纸页手感，不是模态弹窗）
+  ctx.fillStyle = 'rgba(239,231,214,0.90)';
+  ctx.fillRect(0, 0, DESIGN_W, 932);
+
+  // 卡片
+  ctx.fillStyle = ABT_CARD;
+  abtRoundRect(ctx, c.x, c.y, c.w, c.h, 12);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(90,80,64,0.55)';
+  ctx.lineWidth = 1.4;
+  ctx.stroke();
+
+  // 小标题
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'alphabetic';
+  ctx.font = `11px ${ABT_UI}`;
+  ctx.fillStyle = ABT_INK_SOFT;
+  ctx.fillText('关 于', DESIGN_W / 2, c.y + 34);
+
+  // 主名：英文作署名行，中文为主
+  ctx.font = `600 22px ${ABT_UI}`;
+  ctx.fillStyle = ABT_INK;
+  ctx.fillText('Sketchsmith', DESIGN_W / 2, c.y + 66);
+  ctx.font = `13px ${ABT_SERIF}`;
+  ctx.fillStyle = ABT_INK_MID;
+  ctx.fillText('《我是造物主》', DESIGN_W / 2, c.y + 88);
+
+  // 分隔线
+  ctx.strokeStyle = 'rgba(90,80,64,0.30)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(c.x + 34, c.y + 106);
+  ctx.lineTo(c.x + c.w - 34, c.y + 106);
+  ctx.stroke();
+
+  // 正文
+  let y = c.y + 132;
+  const x = c.x + 34;
+  y = abtKv(ctx, '版本', (view && view.version ? 'v' + view.version : 'v0.2.0') + ' · 单文件离线运行', y, x);
+  y = abtKv(ctx, '制作', 'Huanjin', y, x);
+  y = abtKv(ctx, '许可', 'MIT（代码可自由使用、修改、再分发）', y, x);
+  // 依赖名太长，一行放不进卡片内宽：拆两行，第二行不重复标签
+  ctx.font = `11px ${ABT_UI}`;
+  ctx.fillStyle = ABT_INK_SOFT;
+  ctx.fillText('依赖', x, y);
+  ctx.font = `12px ${ABT_UI}`;
+  ctx.fillStyle = ABT_INK;
+  ctx.fillText('matter-js · poly-decomp', x + 46, y);
+  ctx.fillText('roughjs · perfect-freehand', x + 46, y + 19);
+  y += 19;
+
+  // 依赖许可补充说明（三行小字）
+  ctx.font = `11px ${ABT_UI}`;
+  ctx.fillStyle = ABT_INK_SOFT;
+  ctx.textAlign = 'left';
+  ctx.fillText('以上 4 个库同为 MIT 许可，版权归各自作者。', x, y + 30);
+  ctx.fillText('完整许可正文见仓库 LICENSE，以及产物内', x, y + 48);
+  // ⚠️ 这里绝不能写出完整的 script 开标签字面量：
+  // tools/check-single-file.mjs 用非贪婪正则抓「第一个 licenses 块」，
+  // 注释或文案里的字面量会先被匹配到，导致真正的许可块被跳过后误判「缺失或不完整」。
+  ctx.fillText('id="licenses" 的纯文本块（看页面源码可见）。', x, y + 66);
+
+  // 「知道了」按钮
+  const btn = aboutCloseRect();
+  ctx.fillStyle = 'rgba(63,107,79,0.10)';
+  abtRoundRect(ctx, btn.x, btn.y, btn.w, btn.h, 8);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(63,107,79,0.75)';
+  ctx.lineWidth = 1.4;
+  ctx.stroke();
+  ctx.fillStyle = '#3f6b4f';
+  ctx.font = `600 13px ${ABT_UI}`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('知道了', DESIGN_W / 2, btn.y + btn.h / 2 + 0.5);
+
+  // 底部提示：点任何地方都能关，别让玩家去找那个按钮
+  ctx.font = `10px ${ABT_UI}`;
+  ctx.fillStyle = 'rgba(56,49,42,0.30)';
+  ctx.fillText('点任意处关闭', DESIGN_W / 2, c.y + c.h + 22);
+
+  ctx.restore();
+}
+;
 /* src/render/hud.js */
 /**
  * src/render/hud.js —— HUD 与按钮命中（零物理、零平台 API）
@@ -1098,11 +1241,12 @@ function buttonAt(x, y) {
   return null;   // 重来/声音按钮已挪进标题行下方 40 内，见 drawHud 的 hitRect
 }
 
-/** 标题行右下角的两个小按钮命中区（与 drawHud 中的绘制保持一致） */
+/** 标题行右下角的三个小按钮命中区（与 drawHud 中的绘制保持一致） */
 function headerButtonAt(x, y) {
   if (y < 52 || y > 92) return null;
   if (x > DESIGN_W - 46 && x < DESIGN_W - 10) return 'audio';
   if (x > DESIGN_W - 96 && x < DESIGN_W - 50) return 'retry';
+  if (x > DESIGN_W - 152 && x < DESIGN_W - 100) return 'about';
   return null;
 }
 
@@ -1150,13 +1294,15 @@ function drawHud(ctx, view) {
     ctx.fillText(ABILITY_LABELS[id] || id, r.x + 11, r.y + 22);
   }
 
-  // 重来 / 声音：标题行下方，不与场景争位置
+  // 重来 / 声 / 关于：标题行下方，不与场景争位置
   ctx.strokeStyle = 'rgba(90,80,64,0.45)';
   ctx.lineWidth = 1.3;
+  roundRect(ctx, DESIGN_W - 150, 54, 50, 34, 8); ctx.stroke();
   roundRect(ctx, DESIGN_W - 96, 54, 46, 34, 8); ctx.stroke();
   roundRect(ctx, DESIGN_W - 46, 54, 36, 34, 8); ctx.stroke();
   ctx.fillStyle = '#5d5446';
   ctx.font = '12px system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif';
+  ctx.fillText('关于', DESIGN_W - 137, 76);
   ctx.fillText('重来', DESIGN_W - 88, 76);
   ctx.fillText(view.audioOn ? '声' : '静', DESIGN_W - 34, 76);
 
@@ -4659,6 +4805,7 @@ function unlockSandbox(store) {
 
 
 
+
 // 沙盒挂在数组末尾：通关最后一关后 nextLevel 会自然推进到它，不另开一套模式切换。
 // ⚠️ 因此「最后一关」永远是 GAME_LEVELS.length - 2（沙盒不算关）。
 const GAME_LEVELS = [LEVEL_CH1_01, LEVEL_CH1_02, LEVEL_CH1_03, LEVEL_CH1_04, LEVEL_CH1_05, SANDBOX_LEVEL];
@@ -4703,6 +4850,7 @@ function boot() {
     impactDebug: null,
     bubble: null,
     win: false,
+    about: false,
     winAt: 0,
     failFlash: 0,
     fps: 60,
@@ -4939,6 +5087,8 @@ function boot() {
 
   // ---- 输入 ----
   function handleUiTap(x, y) {
+    // 「关于」展开时任何点击都先关掉它——让玩家去瞄「知道了」是多余的一步
+    if (view.about) { view.about = false; AudioBus.play('ui'); return true; }
     if (view.win) {
       if (mainNow() - view.winAt < 600) return true;
       if (view.levelIndex >= GAME_LEVELS.length - 1) { view.levelIndex = 0; buildWorld(); say(view.level.lines.intro, 3200); }
@@ -4946,6 +5096,7 @@ function boot() {
       return true;
     }
     const btn = headerButtonAt(x, y);
+    if (btn === 'about') { view.about = true; AudioBus.play('ui'); return true; }
     if (btn === 'retry') { AudioBus.play('ui'); retryLevel(); return true; }
     if (btn === 'audio') {
       view.audioOn = !view.audioOn;
@@ -5310,7 +5461,7 @@ function boot() {
       say(view.level.lines.intro, 3200);   // 开场句：扉页落下那一刻，仅一句
     }
     const physStart = mainNow();
-    if (runtime && introActive) { /* 扉页期间冻结物理 */ }
+    if (runtime && (introActive || view.about)) { /* 扉页 / 关于展开期间冻结物理：否则读文档时小人已经掉下去了 */ }
     else if (runtime && view.win === false) runtime.step(Math.max(0, Math.min(3, steps)));
     else if (runtime && steps > 0) runtime.step(0);
     const physMs = mainNow() - physStart;
@@ -5332,6 +5483,8 @@ function boot() {
     drawBodies(ctx);
     drawBook(ctx);
     drawHud(ctx, view);
+    // 关于浮层：在 HUD 之上、扉页之下（开场时打不开，所以不会被扉页盖住）
+    if (view.about) drawAbout(ctx, view);
     // 扉页画在最后一层：它要盖住 HUD，否则开场时芯片/进度条会和标题抢读
     if (introActive) {
       const el = t - introT0;
