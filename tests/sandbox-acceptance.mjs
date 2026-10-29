@@ -232,4 +232,54 @@ function reload(store) {
   console.log(`⑥ 存满可腾地方：清空后 0 条且 unlocked 保留 / 单条删除 ok / 不存在 id 报 notfound ✔`);
 }
 
-console.log('\n沙盒验收 6/6 通过');
+// ── 判据⑦：单条删除的接线（live id == 存档 id，且 runtime 能按 id 移除）──────────
+// 为什么补：判据⑥只验了 sandbox.js 的 removeCreature（存档层），但「界面上点一下删掉这一个」
+// 真正需要两层对得上——(a) restore 时把存档 id 传进 spawnCreature，场上造物 id 才与存档记录同值；
+// (b) runtime 提供按 id 移除的口子。缺任意一层，「删一个」就会删错或删了画面留着存档（D30）。
+{
+  const w = worldMod.createPhysicsWorld();
+  const bus = { emit() {}, on() {}, countOf() { return 0; } };
+  const rt = runtimeMod.createLevelRuntime({ level: SANDBOX_LEVEL, world: w, bus });
+
+  // 模拟 restore：把「存档记录 id」作为 spec.id 传进去，spawnCreature 必须原样保留
+  const geo = classify.analyzeStrokeGroup([{ pts: synthLine(200, 700, 260, 702, 4, 0.7) }]);
+  const c = rt.spawnCreature({ form: geo.form, geo, thickness: 10, id: 'save-xyz' });
+  assert.equal(c.id, 'save-xyz', 'spawnCreature 必须尊重传入的 spec.id（restore 才能把 live id 对上存档 id）');
+
+  // 再补一个，确认「按 id 找」能精准命中其中一个而不误伤另一个
+  const geo2 = classify.analyzeStrokeGroup([{ pts: synthLine(300, 700, 360, 702, 4, 0.7) }]);
+  rt.spawnCreature({ form: geo2.form, geo: geo2, thickness: 10, id: 'save-abc' });
+  assert.equal(rt.creatures.length, 2, '前置：应有 2 个造物');
+
+  const ok = rt.removeCreatureById('save-xyz');
+  assert.equal(ok, true, 'removeCreatureById 应删掉存在的 id');
+  assert.equal(rt.creatures.length, 1, '删除后场上应只剩 1 个造物');
+  assert.equal(rt.creatures[0].id, 'save-abc', '被删的必须是 save-xyz，不能误删 save-abc');
+  const no = rt.removeCreatureById('save-xyz');
+  assert.equal(no, false, '重复删除不存在的 id 必须返回 false（不是静默成功）');
+  rt.destroy();
+
+  // 存档层与运行时的 id 约定一致：saveCreature 在传入 id 时以传入者为准（main 在 sandbox 里传 c.id）
+  const s7 = createMemorySaveStore();
+  unlockSandbox(s7);
+  const r7 = saveCreature(s7, { id: 42, form: 'beam', x: 100, y: 600, strokes: [{ pts: [{ x: 100, y: 700 }, { x: 160, y: 702 }] }] });
+  assert.equal(r7.ok, true, 'saveCreature 接受数字 id');
+  assert.equal(loadSandbox(s7).creatures[0].id, 42, '存档记录 id 必须与传入一致（否则 restore 后对不上 live id）');
+
+  // 真机复现的撞号 bug：重进沙盒用 spec.id 复活 id=1，紧接着画的新造物「自动编号」又取到 1，
+  // 两条存档记录同号 → 单条删除时 removeCreature 一次删两条（实测 2→0）。spawnCreature 必须在
+  // 收到显式数字 id 后把 creatureSeq 顶到它之后，避免后续自动编号撞上。
+  const w3 = worldMod.createPhysicsWorld();
+  const bus3 = { emit() {}, on() {}, countOf() { return 0; } };
+  const rt3 = runtimeMod.createLevelRuntime({ level: SANDBOX_LEVEL, world: w3, bus: bus3 });
+  const g3 = classify.analyzeStrokeGroup([{ pts: synthLine(150, 700, 210, 702, 4, 0.7) }]);
+  rt3.spawnCreature({ form: g3.form, geo: g3, thickness: 10, id: 1 });   // 模拟 restore 复活 id=1
+  const g4 = classify.analyzeStrokeGroup([{ pts: synthLine(300, 700, 360, 702, 4, 0.7) }]);
+  const auto = rt3.spawnCreature({ form: g4.form, geo: g4, thickness: 10 });  // 不传 id，自动编号
+  assert.notEqual(auto.id, 1, '显式 id=1 之后自动编号不能又取 1（否则存档记录撞号、单条删除误删两条）');
+  assert.ok(auto.id > 1, '自动编号必须严格大于已用过的显式 id（实际 ' + auto.id + '）');
+  rt3.destroy();
+  console.log('⑦ 单条删除接线：spec.id 保留 / removeCreatureById 精准删一个、删不存在返回 false / 存档 id 约定一致 / 显式 id 后自动编号不撞号 ✔');
+}
+
+console.log('\n沙盒验收 7/7 通过');

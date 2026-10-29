@@ -268,12 +268,24 @@ export function createLevelRuntime(opts) {
     emit('creature:despawn', { id: c.id });
   }
 
+  /** 按 id 移除一个造物（沙盒单条删除用）：从物理世界撤掉刚体、释放预算、移出列表。
+   *  返回 false 表示场上根本没有这个 id（调用方据此决定要不要同步清存档）。 */
+  function removeCreatureById(id) {
+    const c = state.creatures.find((x) => x.id === id);
+    if (!c) return false;
+    despawnCreature(c);
+    return true;
+  }
+
   /** 生成造物：落点 x = 笔画质心 x（造物簿与世界共用同一 x 轴），从天下掉下来 */
   function spawnCreature(spec) {
     if (state.status !== 'playing') return null;
+    // 沙盒「造物园」要同时摆出玩家存过的所有造物（"画什么都会留下"），
+    // 所以不能套用关卡里「同时最多 2 个」的 N1 上限——由 level.maxLiveCreatures 决定。
+    const cap = level.maxLiveCreatures || MAX_LIVE_CREATURES;
     // N1：不清空旧造物，只在超过上限时让**最旧**的那个淡出
     const live = state.creatures.filter((c) => !(c.fadeMs > 0));
-    while (live.length >= MAX_LIVE_CREATURES) {
+    while (live.length >= cap) {
       const oldest = live.shift();
       if (!oldest) break;
       oldest.fadeMs = CREATURE_FADE_MS;
@@ -293,7 +305,18 @@ export function createLevelRuntime(opts) {
       mods: composed.mods, flags: composed.flags,
     });
     const c = {
-      id: ++state.creatureSeq,
+      // 沙盒 restore 时把「存档记录 id」传进来（spec.id），让场上造物与存档记录一一对应——
+      // 否则每次进沙盒都换一套新 id，单条删除就接不回存档了（D30）。
+      // ⚠️ 显式 id（数字）若超过当前 creatureSeq，必须把 seq 顶到它之后：否则同一 runtime 里
+      // 「重进沙盒」用 spec.id 复活了 id=1，紧接着画的新造物自动编号又取到 1 —— 两条存档记录
+      // 同号，单条删除时 removeCreature 会一次删掉两条（实测 2→0）。
+      id: (() => {
+        if (spec.id != null) {
+          if (typeof spec.id === 'number' && spec.id >= state.creatureSeq) state.creatureSeq = spec.id;
+          return spec.id;
+        }
+        return ++state.creatureSeq;
+      })(),
       form: spec.form,
       geo: spec.geo,
       thickness: spec.thickness,
@@ -771,6 +794,7 @@ export function createLevelRuntime(opts) {
     level,
     spawnCreature,
     setAbility,
+    removeCreatureById,
     step,
     snapshot,
     destroy,

@@ -323,6 +323,34 @@ export function drawHud(ctx, view) {
     ctx.fillText('impact score ' + d.score.toFixed(3) + '  ' + (d.gated ? 'GATED(' + d.reason + ')' : d.reason), 20, view.debug ? 262 : 120);
   }
 
+  // ---- 沙盒单条删除：选中造物的高亮虚框 + 「×」删除徽标（徽标位置由 main.js 每帧算好放在 view.delBadge）----
+  if (view.selBounds) {
+    const b = view.selBounds;
+    ctx.save();
+    ctx.strokeStyle = 'rgba(150,74,58,0.9)';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([5, 4]);
+    roundRect(ctx, b.x - 4, b.y - 4, b.w + 8, b.h + 8, 8);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.restore();
+  }
+  if (view.delBadge) {
+    const d = view.delBadge;
+    ctx.save();
+    ctx.fillStyle = 'rgba(150,74,58,0.92)';
+    roundRect(ctx, d.x, d.y, d.w, d.h, 6);
+    ctx.fill();
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 2;
+    const cx = d.x + d.w / 2, cy = d.y + d.h / 2, r = 5;
+    ctx.beginPath();
+    ctx.moveTo(cx - r, cy - r); ctx.lineTo(cx + r, cy + r);
+    ctx.moveTo(cx + r, cy - r); ctx.lineTo(cx - r, cy + r);
+    ctx.stroke();
+    ctx.restore();
+  }
+
   ctx.restore();
 }
 

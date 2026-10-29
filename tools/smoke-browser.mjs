@@ -209,6 +209,30 @@ async function main() {
     const sbShot = await cdp.send('Page.captureScreenshot', { format: 'png' });
     fs.writeFileSync(path.join(ROOT, 'dist', 'smoke-sandbox.png'), Buffer.from(sbShot.data, 'base64'));
 
+    // ── 沙盒单条删除：再画一个，选中它、点 ×，确认只少这一个（不是清空、不是删错）──
+    await evalJs(`(()=>{const pts=[];const[x1,y1,x2,y2]=[340,700,410,704];const n=60;for(let i=0;i<=n;i++){const t=i/n;pts.push({x:x1+(x2-x1)*t+Math.sin(i*1.7)*0.7,y:y1+(y2-y1)*t+Math.cos(i*2.3)*0.7});}__WCWZ__.spawnFromStrokes([{pts}]);return 1;})()`);
+    await sleep(900);
+    const beforeDel = JSON.parse(await evalJs('JSON.stringify({n:__WCWZ__.runtime.creatures.length, saved:(__WCWZ__.store.read("wcwz:sandbox:v1")||{creatures:[]}).creatures.length})'));
+    // 取最新画的那个造物的包围盒中心，真实点击选中它
+    const lastC = JSON.parse(await evalJs('(()=>{const c=__WCWZ__.runtime.creatures[__WCWZ__.runtime.creatures.length-1];let mnx=1e9,mny=1e9,mxx=-1e9,mxy=-1e9;for(const b of c.bodies){mnx=Math.min(mnx,b.bounds.min.x);mxx=Math.max(mxx,b.bounds.max.x);mny=Math.min(mny,b.bounds.min.y);mxy=Math.max(mxy,b.bounds.max.y);}return JSON.stringify({cx:(mnx+mxx)/2,cy:(mny+mxy)/2,id:c.id});})()'));
+    await click(lastC.cx, lastC.cy);
+    await sleep(220);
+    const sel = JSON.parse(await evalJs('JSON.stringify({sel:__WCWZ__.view.selectedSandboxId, badge:__WCWZ__.view.delBadge})'));
+    if (sel.sel == null) {
+      failures.push('点中造物后没有选中（selectedSandboxId=' + sel.sel + '）——单条删除入口失效');
+    } else if (!sel.badge) {
+      failures.push('选中后没有出现删除徽标（delBadge 为 ' + sel.badge + '）');
+    } else {
+      const bx = sel.badge.x + sel.badge.w / 2, by = sel.badge.y + sel.badge.h / 2;
+      await click(bx, by);
+      await sleep(320);
+      const afterDel = JSON.parse(await evalJs('JSON.stringify({n:__WCWZ__.runtime.creatures.length, saved:(__WCWZ__.store.read("wcwz:sandbox:v1")||{creatures:[]}).creatures.length, sel:__WCWZ__.view.selectedSandboxId})'));
+      if (afterDel.n !== beforeDel.n - 1) failures.push(`单条删除后场上只应少 1 个（删前 ${beforeDel.n} → 删后 ${afterDel.n}）`);
+      else if (afterDel.saved !== beforeDel.saved - 1) failures.push(`单条删除后存档只应少 1 条（删前 ${beforeDel.saved} → 删后 ${afterDel.saved}）`);
+      else if (afterDel.sel !== null) failures.push('删除后选中态没清除（selectedSandboxId=' + afterDel.sel + '）');
+      else console.log(`[smoke] 沙盒单条删除：选中(id=${lastC.id}) → 点 × → 场上 ${beforeDel.n}→${afterDel.n} / 存档 ${beforeDel.saved}→${afterDel.saved} ✔`);
+    }
+
     // ── 沙盒「清空」：真实点击两次（第一次是二次确认，不能一下就抹掉）──
     const CLEAR_BTN = { x: 251, y: 71 };   // design 坐标 = DESIGN_W-204+25 / 54+17；视口 430×932 与设计 1:1
     await click(CLEAR_BTN.x, CLEAR_BTN.y);

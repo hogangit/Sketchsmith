@@ -24,7 +24,7 @@ import { chipIndexAt, drawHud, headerButtonAt, pickFailHint } from './render/hud
 import { createStrokeCapture } from './stroke/capture.js';
 import { analyzeStrokeGroup } from './stroke/classify.js';
 import { createPhysicsWorld } from './physics/world.js';
-import { BodyBudget, StrokeBudget } from './physics/budget.js';
+import { BodyBudget, BODY_BUDGET_MAX, StrokeBudget } from './physics/budget.js';
 import { createLevelRuntime } from './level/runtime.js';
 import { getAbility, IMPLEMENTED_ABILITY_IDS } from './abilities/registry.js';
 import { AudioBus } from './audio/audio-bus.js';
@@ -85,6 +85,9 @@ export function boot() {
     win: false,
     about: false,
     clearArmed: false,      // 沙盒「清空」的二次确认态（误触清掉一园子造物不可接受）
+    selectedSandboxId: null,   // 沙盒单条删除：当前选中造物的 id（=== 存档记录 id，见 runtime spawnCreature 的 spec.id）
+    selBounds: null,           // 选中造物的实时包围盒（每帧重算，跟着物理体走）
+    delBadge: null,            // 「×」删除徽标的位置（跟随 selBounds）
     winAt: 0,
     failFlash: 0,
     fps: 60,
@@ -212,6 +215,9 @@ export function boot() {
     if (runtime) { try { runtime.destroy(); } catch (e) { /* noop */ } }
     if (world) { try { world.clear(); } catch (e) { /* noop */ } }
     BodyBudget.reset();
+    // 沙盒「造物园」要同时摆出玩家存过的所有造物，物理刚体配额得放宽（关卡保持默认 24）。
+    // 30 个简单造物约 30~60 个刚体，给到 60；低端机由 PerfGovernor 降档兜底，不阻塞玩家。
+    BodyBudget.setMax(inSandbox() ? 60 : BODY_BUDGET_MAX);
     StrokeBudget.reset();
     world = createPhysicsWorld({});
     // 音频唯一订阅点：碰撞音由物理侧每帧聚合、最多回调 1 次
@@ -232,6 +238,10 @@ export function boot() {
     staticLayer.invalidate();
     view.win = false;
     view.failFlash = 0;
+    // 切关 / 进沙盒都要清空单条删除的选中态：选中态只活在「当前这一园子」里
+    view.selectedSandboxId = null;
+    view.selBounds = null;
+    view.delBadge = null;
     view.snapshot = runtime.snapshot();
     const key = GAME_CHAPTER_KEYS[view.levelIndex] || GAME_CHAPTER_KEYS[0];
     AudioBus.setKey(key.rootHz, key.mode);
@@ -296,7 +306,7 @@ export function boot() {
       try {
         const analysis = analyzeStrokeGroup(c.strokes);
         if (analysis.tooSmall) continue;
-        const made = runtime.spawnCreature({ form: analysis.form, geo: analysis, thickness: c.thickness || MAIN_THICKNESS });
+        const made = runtime.spawnCreature({ form: analysis.form, geo: analysis, thickness: c.thickness || MAIN_THICKNESS, id: c.id });
         if (!made) continue;
         for (const a of (c.abilities || []).slice(0, 2)) runtime.setAbility(a);
         n++;
@@ -306,6 +316,35 @@ export function boot() {
       view.snapshot = runtime.snapshot();
       toast(`造物园：接回 ${n} 个旧造物。`, 2400);
     }
+  }
+
+  /**
+   * 单条删除：点中的造物 id 既对应场上刚体，也对应存档记录（D30：restore 时把存档 id 传进 spawnCreature）。
+   * 所以从世界撤掉 + 从存档删掉用的是同一个 id，不会删错、也不会删了画面却留着存档。
+   */
+  function deleteSandboxCreature(id) {
+    if (!inSandbox() || id == null || !runtime) return;
+    const onField = runtime.removeCreatureById(id);
+    removeCreature(store, id);   // 存档里也删掉，否则下次进沙盒它又回来了
+    if (onField) AudioBus.play('fall');
+    if (view.selectedSandboxId === id) view.selectedSandboxId = null;
+    view.selBounds = null;
+    view.delBadge = null;
+    toast('删掉了一个造物。', 1500);
+  }
+
+  /** 命中测试：点 (x,y) 落在哪个造物上（沙盒里才生效）。返回 id 或 -1。
+   *  用刚体 AABB 粗判——造物大多凸形，点边缘一点也能选到，够用且不依赖精确几何。 */
+  function sandboxCreatureAt(x, y) {
+    if (!inSandbox() || !runtime) return -1;
+    for (let i = runtime.creatures.length - 1; i >= 0; i--) {
+      const c = runtime.creatures[i];
+      for (const b of c.bodies) {
+        const bb = b.bounds;
+        if (x >= bb.min.x && x <= bb.max.x && y >= bb.min.y && y <= bb.max.y) return c.id;
+      }
+    }
+    return -1;
   }
 
   const capture = createStrokeCapture({
@@ -432,6 +471,28 @@ export function boot() {
       AudioBus.setEnabled(view.audioOn);
       AudioBus.play('ui');
       return true;
+    }
+    // ── 沙盒单条删除：命中「×」徽标 → 删这一个；否则点中造物 → 选中/取消；点空白 → 取消选中 ──
+    // 这段只跑沙盒：非沙盒根本没有持久造物可选，且场景点空白处也不该被吞掉（免得误触挡住别的交互）。
+    if (inSandbox()) {
+      if (view.delBadge &&
+          x >= view.delBadge.x && x <= view.delBadge.x + view.delBadge.w &&
+          y >= view.delBadge.y && y <= view.delBadge.y + view.delBadge.h) {
+        deleteSandboxCreature(view.selectedSandboxId);
+        return true;
+      }
+      const hit = sandboxCreatureAt(x, y);
+      if (hit !== -1) {
+        view.selectedSandboxId = (view.selectedSandboxId === hit) ? null : hit;   // 再点一次同一只＝取消选中
+        AudioBus.play('ui');
+        return true;
+      }
+      if (view.selectedSandboxId != null) {   // 点空白处取消选中（不画图：场景点本就不落笔）
+        view.selectedSandboxId = null;
+        view.selBounds = null;
+        view.delBadge = null;
+        return true;
+      }
     }
     const ci = chipIndexAt(x, y, (view.level.chips || []).length);
     if (ci >= 0) {
@@ -904,6 +965,24 @@ export function boot() {
     if (view.failFlash > 0) view.failFlash = Math.max(0, view.failFlash - dt / 600);
     AudioBus.tickVoice();   // C.5 挂起 / C.4 延后的推进（幂等）
     if (runtime) view.snapshot = runtime.snapshot();
+    // 沙盒单条删除：每帧重算选中造物的实时包围盒与「×」徽标位置（造物会掉、会滚，徽标得跟着走）
+    view.selBounds = null;
+    view.delBadge = null;
+    if (inSandbox() && view.selectedSandboxId != null && runtime) {
+      const sc = runtime.creatures.find((x) => x.id === view.selectedSandboxId);
+      if (sc && sc.bodies.length) {
+        let minX = 1e9, minY = 1e9, maxX = -1e9, maxY = -1e9;
+        for (const b of sc.bodies) {
+          minX = Math.min(minX, b.bounds.min.x); maxX = Math.max(maxX, b.bounds.max.x);
+          minY = Math.min(minY, b.bounds.min.y); maxY = Math.max(maxY, b.bounds.max.y);
+        }
+        const bx = { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+        view.selBounds = bx;
+        view.delBadge = { x: bx.x + bx.w + 2, y: bx.y - 22, w: 22, h: 22 };
+      } else {
+        view.selectedSandboxId = null;   // 选中对象已经没了（掉出世界等），自动取消
+      }
+    }
     if (view.impactDebugOn && world) view.impactDebug = world.impactDebug;
 
     surface.beginFrame('#efe7d6');

@@ -28,6 +28,9 @@ export const SANDBOX_LEVEL = {
   // 全部已实装能力都可用（造物仍受「每造物 ≤2 枚」全局上限约束）
   chips: [...IMPLEMENTED_ABILITY_IDS],
   spawnY: 84,
+  // 沙盒要同时摆出玩家存过的所有造物（"画什么都会留下"），不能用关卡的「同时最多 2 个」上限。
+  // 这里给到存档上限 30，让存满时全部可见；再多的靠物理预算兜底（buildWorld 里调高 BodyBudget）。
+  maxLiveCreatures: SANDBOX_MAX_CREATURES,
   terrain: [
     { x: 215, y: 471, w: 430, h: 82, mat: 'ground' },   // 一整块地台：x 0..430，顶面 430
   ],
