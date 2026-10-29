@@ -234,8 +234,8 @@ L3 团块+变重 → 过关（1.8s, form=wheel）
 - **纯文字台词此前不防泄漏**：`sb_toss*` 等「不朗读」只写在注释里，运行时照样送 `AudioBus.speak`。已改为机器可验的 `textOnly` 闭集（`lines.js` 导出 `TEXT_ONLY_LINE_IDS`，`showLine` 提前 return），`core.test` 里做了**双向比对**断言（漏标 / 误标都会红，D28）。
 - **沙盒模式的存档界面**：删单个造物的界面**已完成**（点造物选中 → 点 × 删一个，见上）；连同「清空」（二次确认）两条腾地方路径齐活，上限 30 不再是死路。
 - **性能降级逻辑已验死、帧率只有桌面参考值**：降级**行为**已由 `tests/perf-governor.test.mjs` 验死（物理 30 帧降级 / 好帧清零 / p90 降级 / 降到底停 / 不自动升档 / 三档渲染开关语义，6/6）；分档帧率由 `tools/perf-probe.mjs` 实测——headless 桌面沙盒 3 造物下三档 p50 16.6–17ms 都在 60Hz 预算内、low 档 p99 尾部最好（22.9ms vs high 18.2ms）。**这仍是桌面参考值，弱 GPU 真机上的差距与触发概率仍是未验证项。**
-- **手绘手感未由真人验证**：`smoke-browser.mjs` 走的是 `spawnFromStrokes()`（绕过 pointer 采样）。我**没有**用鼠标/手指在真实设备上完整玩一遍 1→3，所以「pointer 采样密度在真机上的手感」「多笔归组 700ms 是否跟手」这两点仍是未验证项。
-- **iOS 真机音频未验证**：解锁逻辑按规格实现（首次 pointerdown 同步 `unlockMedia()`），但没有 iPhone 实机证据。
+- **真实 pointer 采样链路已由真手势冒烟覆盖；主观手感仍需真人**：`smoke-browser.mjs` 新增一段用 CDP 派发**真实 touch 事件**走完整链路（`pointerdown → 采样 → 700ms 归组 → commit → 生成造物`），已实测：①场景区落笔不进入绘制、不生成造物（inBook 门禁）；②2px 采样门禁（派发 41 点 → 实际记录 21 点）；③`stroke:begin → end → commit` 事件链完整；④真实手指画一笔出 `form=beam`，贴「变硬」后**关1 真实通关**。所以「链路是否通、门禁是否生效」不再是未验证项。**仍未验证的是主观项**：真机上采样密度跟不跟手、多笔归组 700ms 是否顺手——没有断言能表达，只能真人小样本。
+- **iOS 真机音频未验证（同步解锁路径已证结构正确）**：解锁逻辑按规格实现（首次 `pointerdown` 同步 `unlockMedia()`）；真手势冒烟已实测首次真实手势后 `audioUnlocked false → true`，证明解锁确实发生在手势同步路径里、而非被异步包裹。**但 headless Edge ≠ iOS Safari**：iPhone 实机上 Safari 是否同样放行、语音能否起播，仍缺实机证据。
 
 ## 七、我自己玩下来卡住的点（已知体验问题）
 

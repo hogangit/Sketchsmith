@@ -129,8 +129,13 @@ async function main() {
       await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount: 1 });
       await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 });
     };
+    const unlockedBeforeAbout = await evalJs('__WCWZ__.view.audioUnlocked');
     await click(305, 71);   // HUD「关于」按钮（x=280..330, y=54..88 的中心）
     await sleep(300);
+    // 首次真实 pointerdown（mouse→pointerdown）必须在**同步路径**里解锁音频：这是 iOS 唯一合法的解锁时机。
+    // headless 能验「解锁真的在手势里发生」；Safari 实机行为仍需另测（见 README 未验证项）。
+    if (await evalJs('__WCWZ__.view.audioUnlocked') !== true) failures.push('首次真实 pointerdown 后音频仍未解锁（同步 unlockMedia 路径失效）');
+    else console.log(`[smoke] 首次真实手势解锁：audioUnlocked ${unlockedBeforeAbout} → true ✔（iOS 同步路径结构正确，Safari 实机另测）`);
     if (await evalJs('__WCWZ__.view.about === true') !== true) {
       failures.push('「关于」按钮点击未命中（view.about 仍为 false）');
     } else {
@@ -149,6 +154,61 @@ async function main() {
     } else {
       console.log('[smoke] 扉页落下后开场句 → ' + JSON.parse(bub).text);
     }
+
+    // ── 真实 pointer 手势冒烟 ───────────────────────────────────────────────
+    // 此前所有用例都走 __WCWZ__.spawnFromStrokes()，**绕过了 pointer 采样层**（README 曾列为未验证项）。
+    // 这里用 CDP 派发真实 touch 事件（已开 touch emulation），走完整条
+    //   canvasEl.pointerdown → capture.begin/move/end → 700ms 归组 → commit → spawnFromStrokes → 造物
+    // 链路。能验的是「链路正确性 + 采样门禁 + 场景区不误画」，主观手感仍需真人。
+    await evalJs('__WCWZ__.view.levelIndex=0; __WCWZ__.retryLevel(); 1');
+    await sleep(300);
+    // 包装 bus.emit 记录本段真实产生的事件（末尾还原，避免污染后续用例）
+    await evalJs(`(()=>{const b=__WCWZ__.bus;window.__origEmit=b.emit.bind(b);window.__ev=[];b.emit=(e,p)=>{window.__ev.push([e,p]);return window.__origEmit(e,p);};return 1;})()`);
+    const touch = async (type, pts) => {
+      await cdp.send('Input.dispatchTouchEvent', {
+        type, touchPoints: pts.map((p) => ({ x: p.x, y: p.y, id: 1, radiusX: 2, radiusY: 2, force: 0.5 })),
+      });
+    };
+
+    // T2：场景区（y<BOOK_TOP）落笔必须**不**进入绘制（inBook 门禁），也不生成造物。
+    // 先做 T2：此时 view.win=false，不会被「过关覆盖层」吞掉这次点击。
+    await touch('touchStart', [{ x: 200, y: 300 }]);
+    await touch('touchMove', [{ x: 240, y: 305 }]);
+    await touch('touchEnd', []);
+    await sleep(300);
+    const t2 = JSON.parse(await evalJs('JSON.stringify({ev:window.__ev.map(e=>e[0]), n:__WCWZ__.runtime.creatures.length})'));
+    if (t2.ev.includes('stroke:begin')) failures.push('场景区落笔误触发了 stroke:begin（inBook 门禁失效）');
+    else if (t2.n !== 0) failures.push('场景区落笔误生成了造物（n=' + t2.n + '）');
+    else console.log('[smoke] 真实手势 T2：场景区落笔不进入绘制、不生成造物 ✔');
+
+    // T1：造物簿真实画一笔长横线；序列里夹杂「距上一点 <2px」的微抖点，验证 SAMPLE_MIN_DIST 门禁。
+    await evalJs('window.__ev=[]; 1');
+    const stroke = [{ x: 150, y: 700 }];
+    for (let x = 160; x <= 350; x += 10) {
+      stroke.push({ x, y: 700 + Math.sin(x) * 0.3 });          // 主点，间距 10px ≥2 → 记录
+      stroke.push({ x: x + 0.6, y: 700 + Math.sin(x) * 0.3 });  // 微抖，距主点 0.6px <2 → 丢弃
+    }
+    await touch('touchStart', [stroke[0]]);
+    for (let i = 1; i < stroke.length; i++) await touch('touchMove', [stroke[i]]);
+    await touch('touchEnd', []);
+    await sleep(120);   // <700ms 归组窗口：strokes 尚未 commit，可读 capture.pointCount
+    const live = JSON.parse(await evalJs('JSON.stringify({pc:__WCWZ__.capture.pointCount, unlocked:__WCWZ__.view.audioUnlocked})'));
+    if (!(live.pc > 2)) failures.push('真实手势采样点数过少（pc=' + live.pc + '）——pointer 链路没采到点');
+    else if (!(live.pc < stroke.length)) failures.push('采样门禁失效：<2px 微抖点没被丢弃（pc=' + live.pc + ', 派发=' + stroke.length + '）');
+    else console.log(`[smoke] 真实手势 T1-a：pointerdown 解锁=${live.unlocked} / 采样 ${stroke.length}→${live.pc} 点（2px 门禁生效）✔`);
+    await sleep(850);   // >700ms 归组窗口：commit 已发生、造物已生成
+    const t1 = JSON.parse(await evalJs(`JSON.stringify({ev:window.__ev.map(e=>e[0]), commit:(window.__ev.find(e=>e[0]==='stroke:commit')||[null,{}])[1], n:__WCWZ__.runtime.creatures.length, form:__WCWZ__.view.snapshot.creature?__WCWZ__.view.snapshot.creature.form:null})`));
+    if (!t1.ev.includes('stroke:begin')) failures.push('真实手势未发出 stroke:begin');
+    else if (!t1.ev.includes('stroke:end')) failures.push('真实手势未发出 stroke:end');
+    else if (!t1.ev.includes('stroke:commit')) failures.push('真实手势未发出 stroke:commit（多笔归组/提交没接线）');
+    else if (t1.n < 1) failures.push('真实手势画完却没生成造物（n=' + t1.n + '）');
+    else console.log(`[smoke] 真实手势 T1-b：事件链 begin→end→commit 完整 / commit.points=${t1.commit.points} / 造物 ${t1.n} 个 form=${t1.form} ✔`);
+    // 加分诊断：真实手势画出的造物贴「变硬」后能否通关关1（不强求，如实报告，形状受真实采样影响）
+    await evalJs(`__WCWZ__.runtime.setAbility('harden'); 1`);
+    let ptrWin = false;
+    for (let i = 0; i < 24; i++) { await sleep(250); if (await evalJs('__WCWZ__.view.snapshot.status') === 'finished') { ptrWin = true; break; } }
+    console.log(`[smoke] 真实手势 T1-c：贴「变硬」后 ${ptrWin ? '关1 真实通关 ✔' : '未通关（真实采样形状/落点差异，仅记录不判失败）'}`);
+    await evalJs('__WCWZ__.bus.emit=window.__origEmit; 1');   // 还原，避免污染后续用例
 
     for (const c of CASES) {
       await evalJs(`__WCWZ__.view.levelIndex=${c.level}; __WCWZ__.retryLevel(); 1`);
