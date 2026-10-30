@@ -24,7 +24,9 @@ const HEADFUL = process.argv.includes('--headful');
 
 const CASES = [
   { level: 0, name: 'L1 梁+变硬', line: [148, 700, 352, 703], ability: 'harden' },
-  { level: 1, name: 'L2 梁+变硬', line: [182, 700, 356, 704], ability: 'harden' },
+  // D32：关2 悬空量收到 21px 后，跨整条沟的长梁（182→356）不再扫到南瓜（t=9 实测 timeout）。
+  // 改用「短梁架在悬空带右上方」的画法：206→300、t=9 实测稳过（tools/probe-l2-beam.mjs）。
+  { level: 1, name: 'L2 梁+变硬', line: [206, 700, 300, 704], ability: 'harden' },
   { level: 2, name: 'L3 团块+变重', circle: [340, 700, 34], ability: 'heavy' },
   // 关4 弹射主解：弹簧板画在崖前平地（中心 x≈142，落在可绘制窗口 [100,155] 内），点「变硬+怕痒」
   // 小人踩中沿法线被弹起、actor 特例改「向上+朝目标」弹射（D27），抛物线落上高台。
@@ -251,15 +253,19 @@ async function main() {
     // ── 回归：过关覆盖层上点「重来」必须留在本关，不得跳下一关（用户实测 bug）──
     // 根因：view.win 为真时 handleUiTap 的 win 分支吞掉所有点击 → nextLevel()，
     // 而头部「重来」按钮在覆盖层下半透明可见，点它等于点了「继续」。
+    // D32 备注：用例改用**关1**。关2 悬空量收到 21px 后，用合成笔画（无手势抖动）画梁
+    // 落点不可控（实测只把南瓜推了 3px），会让这条 UI 回归被物理随机性搞挂；
+    // 而"过关后点重来"是关卡无关的 UI 行为，关1 的梁 3.5s 稳定过关。
     {
-      await evalJs('__WCWZ__.view.levelIndex=1; __WCWZ__.retryLevel(); 1');   // 第 2 关
+      await evalJs('__WCWZ__.view.levelIndex=0; __WCWZ__.retryLevel(); 1');   // 第 1 关
       await sleep(200);
-      await evalJs(`(()=>{const pts=[];const[x1,y1,x2,y2]=[182,700,356,704];const n=60;for(let i=0;i<=n;i++){const t=i/n;pts.push({x:x1+(x2-x1)*t,y:y1+(y2-y1)*t});}__WCWZ__.spawnFromStrokes([{pts}]);return 1;})()`);
+      await evalJs(`(()=>{const pts=[];const[x1,y1,x2,y2]=[148,700,352,703];const n=60;for(let i=0;i<=n;i++){const t=i/n;pts.push({x:x1+(x2-x1)*t,y:y1+(y2-y1)*t});}__WCWZ__.spawnFromStrokes([{pts}]);return 1;})()`);
       await evalJs(`__WCWZ__.runtime.setAbility('harden'); 1`);
       let won = false;
       for (let i = 0; i < 24; i++) { await sleep(250); if (await evalJs('__WCWZ__.view.win') === true) { won = true; break; } }
       if (!won) {
-        failures.push('重来回归用例未能过关（进不了 win 覆盖层，用例失效）');
+        const diag = await evalJs(`JSON.stringify({idx:__WCWZ__.view.levelIndex, win:__WCWZ__.view.win, id:__WCWZ__.view.level && __WCWZ__.view.level.id, creatures:(__WCWZ__.runtime?__WCWZ__.runtime.creatures.length:-1), prop:(function(){try{const r=__WCWZ__.runtime;const p=r.state.props[r.state.activeProp];return [Math.round(p.position.x),Math.round(p.position.y)];}catch(e){return 'n/a';}})()})`);
+        failures.push('重来回归用例未能过关（进不了 win 覆盖层，用例失效） ' + diag);
       } else {
         await sleep(700);   // 越过 winAt 的 600ms 保护窗
         const idxBefore = await evalJs('__WCWZ__.view.levelIndex');

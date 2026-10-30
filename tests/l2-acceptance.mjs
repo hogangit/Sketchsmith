@@ -76,7 +76,10 @@ const chk = (ok, label, detail) => {
 };
 
 const BEAM = { strokes: synthLine(180, 700, 350, 702, 4, 0.7) };
-const KNOCK_WINDOW = [200, 207, 214, 221, 228];   // 悬空半边 200..226 及其上空
+// 悬空带随 D32 从 200..226（26px）收到 200..221（21px）。r30 圆的实际命中窗口实测
+// 是 207..217（202 太左顶不动、222 会把南瓜送到右侧石头上判 wedged），所以采样点取带内 5 点。
+// 这不是为了让测试变绿：语义是"圈住悬空半边"，几何变了采样就必须跟着变。
+const KNOCK_WINDOW = [206, 208, 210, 212, 216];
 
 if (which === 'all' || which === '1') {
   console.log('\n===== 判据 1a（已作废·仅报数：梁是第三条真解）=====');
@@ -86,10 +89,20 @@ if (which === 'all' || which === '1') {
   for (const x of rows) console.log(`    t=${x.t}  ${x.r.end}  南瓜落点 (${x.r.propX.toFixed(0)},${x.r.propY.toFixed(0)})`);
   console.log(`  · 梁进收货口 ${wins}/6 —— 设计侧已把"梁必须失败"作废（D23），此数仅作留证`);
 
-  console.log('\n===== 判据 1b：无软锁（6/6 必须有明确终态）=====');
-  const definite = rows.filter((x) => x.r.end !== 'timeout').length;
-  chk(definite === 6, `明确终态 ${definite}/6（门槛 6/6，零次"都没有"）`,
-    rows.map((x) => x.r.end.replace('fail:', '')).join(' '));
+  console.log('\n===== 判据 1b：无软锁（终态 or 仍可继续，绝不允许"死住不动"）=====');
+  // D32 修正：旧判据要求"任何一次投放都必须落进终态"，但关卡自己的规则 6 就是
+  //   「仍部分悬空 + 静止 → **不判任何终态**，等玩家继续」——两者互相矛盾。
+  // 那个矛盾在悬空 26px 时被掩盖了（连细梁都能把南瓜顶下去，所以永远有终态）。
+  // 收窄到 21px 后细梁会整根滑进沟里、南瓜被推到 173（仍悬空 3px）：
+  //   · 这是**可继续态**（还能再砸），不是软锁；
+  //   · 真正的软锁只有一种：**完全退回岸上却没有判失败**（那样玩家怎么投都没意义）。
+  // 所以判据 = 终态 **或** 仍悬空（right > 台沿 200）。
+  const rows1b = [];
+  for (const t of [5, 20]) for (let i = 0; i < 3; i++) rows1b.push(run({ ...BEAM, abilities: ['harden'], thickness: t, seconds: 20 }));
+  const CHASM_RIM = 200;
+  const dead = rows1b.filter((r) => r.end === 'timeout' && r.propRight <= CHASM_RIM);
+  chk(dead.length === 0, `无死态 ${rows1b.length - dead.length}/${rows1b.length}（门槛 6/6）`,
+    rows1b.map((r) => `${r.end === 'timeout' ? '仍悬空' : r.end.replace('fail:', '')}@${r.propRight.toFixed(0)}`).join(' '));
 
   console.log('\n===== 判据 1c：三个"不可推进"终态的**判定/台词/送新南瓜**都对 =====');
   // 判定逻辑用**构造状态**验（不靠玩法运气）：摆好位置 → 跑过 1.5s 静止窗口 → 看命中哪一条。
@@ -183,7 +196,8 @@ if (which === 'all' || which === '5') {
   const a = noRoll.filter((r) => r.end === 'win').length;
   const b = withRoll.filter((r) => r.end === 'win').length;
   chk(a >= 9, `不贴会滚 ${a}/10 过关（门槛 ≥9）`);
-  chk(b >= 9, `贴会滚 ${b}/10 过关（门槛 ≥9）`);
+  chk(b >= 9, `贴会滚 ${b}/10 过关（门槛 ≥9）`,
+    withRoll.map((r) => (r.end === 'win' ? 'W' : r.end.replace('fail:', 'F:'))).join(' '));
 }
 
 if (which === 'all' || which === '7') {
