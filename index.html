@@ -1855,7 +1855,9 @@ function createVoiceScheduler(o) {
 
 
 const AUDIO_MAX_SFX = 8;
-const AUDIO_NODE_BUDGET = 40;
+// 单位是「同时存活的音频节点数」。一个乐音现在可能带 2 条泛音（每条 振荡器+增益 = 2 节点），
+// 所以最坏情形 ≈ 8 个音 × 7 节点 = 56；40 会让主题化后的音效在混战时被提前拒绝。
+const AUDIO_NODE_BUDGET = 56;
 const AUDIO_QUEUE_MAX = 3;
 const AUDIO_QUEUE_TTL_MS = 1500;
 const AUDIO_LOOKAHEAD_MS = 120;
@@ -1906,6 +1908,12 @@ const AUDIO_SFX_RECIPES = {
   // 能力组合奖励音：全场唯一高亮度音色。纯四度+纯五度上行三音 + 高频 shimmer。
   combo: { type: 'arp', wave: 'triangle', notes: [392, 523.25, 587.33], step: 0.085, noteDur: 0.46,
     gain: 0.24, attack: 0.008, shimmer: [2093, 2637, 3136], shimmerDur: 0.34, shimmerGain: 0.045 },
+
+  // ── 声音风格试听音（不是游戏事件，只在「关于」里点芯片时播）─────────────────
+  // 四个音跨两个八度：低音显厚度、高音显泛音。时长足够（0.62s × 主题系数）才听得出
+  // 八音盒的短促金属尾与陶笛的慢起音——早先复用 0.18s 的 ability，三者听感几乎一样。
+  preview: { type: 'arp', wave: 'triangle', notes: [392, 523.25, 659.25, 783.99], step: 0.15,
+    noteDur: 0.62, gain: 0.20, attack: 0.006 },
 };
 
 /**
@@ -1916,10 +1924,48 @@ const AUDIO_SFX_RECIPES = {
  * 默认 warm；选择持久化到 localStorage('wcwz_sound_theme')。
  */
 const SOUND_THEMES = {
-  warm:     { label: '暖木',   wave: 'triangle', gain: 1.0,  bgm: { wave: 'triangle', gain: 1.0, decay: 0.9  } },
-  musicbox: { label: '八音盒', wave: 'sine',     gain: 0.95, bgm: { wave: 'sine',     gain: 1.0, decay: 0.42 } },
-  ocarina:  { label: '陶笛',   wave: 'sine',     gain: 1.0,  bgm: { wave: 'sine',     gain: 0.8, decay: 1.5  } },
+  /**
+   * 暖木：木琴 / 马林巴。三角波（本身奇次泛音丰富）+ 一条短 2 倍泛音，
+   * 起音与衰减保持原表节奏，亮度中性 → 温而不闷。
+   */
+  warm: {
+    label: '暖木', wave: 'triangle', gain: 1.0,
+    attack: 1.0, dur: 1.0, minAttack: 0, bright: 1.0,
+    partials: [{ ratio: 2.0, gain: 0.16, durScale: 0.55 }],
+    bgm: { wave: 'triangle', gain: 1.0, decay: 0.9, attack: 0.18 },
+  },
+  /**
+   * 八音盒：金属拨片。**靠非谐泛音立住音色**——2 倍 + 4.2 倍的亮泛音衰减远快于基频，
+   * 起音极快（×0.45）、整体短促（×0.72），噪声也提亮（×1.45），听感是「叮」不是「咚」。
+   * 三个主题里唯一带高频金属味的那一个。
+   */
+  musicbox: {
+    label: '八音盒', wave: 'sine', gain: 1.05,
+    attack: 0.45, dur: 0.72, minAttack: 0, bright: 1.45,
+    partials: [{ ratio: 2.0, gain: 0.34, durScale: 0.55 }, { ratio: 4.2, gain: 0.18, durScale: 0.32 }],
+    bgm: { wave: 'sine', gain: 1.0, decay: 0.45, attack: 0.01, partial: { ratio: 3.0, gain: 0.16 } },
+  },
+  /**
+   * 陶笛：空心管乐。慢起音（最短 45ms，圆头不爆）+ 1.5 倍长衰减 + 低通压暗（×0.6），
+   * 2 倍泛音很轻 → 气息感、连奏感，三个主题里唯一「软起音」的那一个。
+   */
+  ocarina: {
+    label: '陶笛', wave: 'sine', gain: 1.0,
+    attack: 3.2, dur: 1.5, minAttack: 0.045, bright: 0.6,
+    partials: [{ ratio: 2.0, gain: 0.10, durScale: 1.1 }],
+    // 无滤波器的配方（如 ability）给一条固定低通，保证「闷」这个特征在所有音效上都成立
+    toneLowpass: 1700,
+    bgm: { wave: 'sine', gain: 0.85, decay: 1.5, attack: 0.26 },
+  },
 };
+
+/** 三条主题在「波形 + 泛音列 + 包络 + 亮度」四维上的指纹，测试用它断言三者两两不同 */
+function soundThemeFingerprint(id) {
+  const t = SOUND_THEMES[id];
+  if (!t) return '';
+  const parts = (t.partials || []).map((p) => `${p.ratio}:${p.gain}:${p.durScale}`).join(',');
+  return [t.wave, parts, `${t.attack}/${t.dur}/${t.minAttack}`, t.bright].join('|');
+}
 
 const AUDIO_MODE_SCALES = {
   0: [0, 2, 4, 7, 9],   // 宫（五声大调）
@@ -2049,6 +2095,7 @@ function createAudioBus() {
     gain.gain.setValueAtTime(0.0001, t0);
     gain.gain.exponentialRampToValueAtTime(Math.max(0.0002, vol), t0 + (spec.attack || 0.003));
     gain.gain.exponentialRampToValueAtTime(0.0001, t0 + spec.dur);
+    let dest = masterGain;
     if (spec.filter) {
       const bq = ctx.createBiquadFilter();
       bq.type = spec.filter.type || 'lowpass';
@@ -2059,6 +2106,7 @@ function createAudioBus() {
       bq.connect(masterGain);
       track(1);
       setTimeout(() => { try { bq.disconnect(); track(-1); } catch (e) { /* noop */ } }, (spec.dur + 0.4) * 1000);
+      dest = bq;
     } else {
       gain.connect(masterGain);
     }
@@ -2084,6 +2132,36 @@ function createAudioBus() {
     };
     if (src.start) src.start(t0);
     if (src.stop) src.stop(t0 + spec.dur + 0.02);
+    // ── 泛音列（音色核心）─────────────────────────────────────────────────
+    // 每条泛音有自己的增益包络，衰减普遍比基频快（durScale<1）——这正是八音盒「叮」和
+    // 木琴「咚」的区别来源。噪声类没有泛音概念，直接跳过。
+    if (spec.type !== 'noise' && spec.partials && spec.partials.length) {
+      spec.partials.forEach((pt) => {
+        const ratio = pt.ratio || 2;
+        const pDur = Math.max(0.05, spec.dur * (pt.durScale || 1));
+        const pVol = Math.max(0.0002, vol * (pt.gain || 0.2));
+        const pg = ctx.createGain();
+        pg.gain.setValueAtTime(0.0001, t0);
+        pg.gain.exponentialRampToValueAtTime(pVol, t0 + Math.max(0.002, (spec.attack || 0.003) * 0.5));
+        pg.gain.exponentialRampToValueAtTime(0.0001, t0 + pDur);
+        const po = ctx.createOscillator();
+        po.type = spec.wave || 'sine';
+        po.frequency.setValueAtTime(Math.max(20, spec.f0 * ratio), t0);
+        if (spec.f1 !== spec.f0) {
+          po.frequency.exponentialRampToValueAtTime(Math.max(20, spec.f1 * ratio), t0 + pDur);
+        }
+        po.connect(pg);
+        pg.connect(dest);
+        track(2);
+        po.onended = () => {
+          try { po.disconnect(); } catch (e) { /* noop */ }
+          try { pg.disconnect(); } catch (e) { /* noop */ }
+          track(-2);
+        };
+        po.start(t0);
+        po.stop(t0 + pDur + 0.02);
+      });
+    }
     return true;
   }
 
@@ -2093,17 +2171,41 @@ function createAudioBus() {
    * 高频 shimmer 加持；gain 上限已按 −2dB 换算，只低于盖章音。
    */
   /**
-   * 把当前「声音风格」套到一条配方上：乐音类换波形 + 乘全局增益，噪声类只乘增益。
+   * 把当前「声音风格」套到一条配方上：乐音类换波形 + 泛音列 + 起音/衰减缩放 + 亮度；
+   * 噪声类换不了波形，就只缩放滤波频率（亮度）与增益。
    * 返回拷贝，绝不改写共享的 AUDIO_SFX_RECIPES（overlay 也单独套，避免污染原表）。
+   *
+   * 为什么不是「只换 wave」：早先 warm/musicbox/ocarina 里后两者都是 sine，
+   * 只有 5% 音量差 —— 用户实测「选 3 个声音没区别」。音色必须靠**泛音结构 + 包络**区分，
+   * 波形只是其中一维（见 SOUND_THEMES 每条注释）。
    */
+  function scaleFilter(f, k) {
+    const lo = 40, hi = 16000;
+    return {
+      type: f.type,
+      f0: Math.max(lo, Math.min(hi, f.f0 * k)),
+      f1: Math.max(lo, Math.min(hi, f.f1 * k)),
+      q: f.q,
+    };
+  }
+
   function applyTheme(r) {
     if (!theme || !r) return r;
     const out = Object.assign({}, r);
+    const tg = theme.gain != null ? theme.gain : 1;
+    const bright = theme.bright || 1;
     if (r.type === 'tone' || r.type === 'arp') {
-      if (theme.wave) out.wave = theme.wave;
-      out.gain = (r.gain || 0.2) * (theme.gain != null ? theme.gain : 1);
+      out.wave = theme.wave || r.wave;
+      out.gain = (r.gain || 0.2) * tg;
+      out.attack = Math.max((r.attack || 0.003) * (theme.attack || 1), theme.minAttack || 0);
+      if (r.dur) out.dur = r.dur * (theme.dur || 1);
+      if (r.noteDur) out.noteDur = r.noteDur * (theme.dur || 1);
+      if (theme.partials) out.partials = theme.partials;
+      if (r.filter) out.filter = scaleFilter(r.filter, bright);
+      else if (theme.toneLowpass) out.filter = { type: 'lowpass', f0: theme.toneLowpass, f1: theme.toneLowpass, q: 0.7 };
     } else if (r.type === 'noise') {
-      out.gain = (r.gain || 0.2) * (theme.gain != null ? theme.gain : 1);
+      out.gain = (r.gain || 0.2) * tg;
+      if (r.filter) out.filter = scaleFilter(r.filter, bright);
     }
     return out;
   }
@@ -2122,7 +2224,8 @@ function createAudioBus() {
     };
     notes.forEach((f, i) => {
       startVoice({ type: 'tone', wave: r.wave || 'triangle', f0: f, f1: f, dur: r.noteDur || 0.45,
-        gain: r.gain || 0.2, attack: r.attack || 0.008 }, t0 + i * step, volScale, oneDown);
+        gain: r.gain || 0.2, attack: r.attack || 0.008,
+        filter: r.filter || null, partials: r.partials || null }, t0 + i * step, volScale, oneDown);
     });
     if (r.shimmer) {
       r.shimmer.forEach((f, i) => {
@@ -2174,10 +2277,25 @@ function createAudioBus() {
       const dur = bgm.decay || 0.9;
       const peak = 0.09 * (bgm.gain != null ? bgm.gain : 1);
       g.gain.setValueAtTime(0.0001, t);
-      g.gain.exponentialRampToValueAtTime(Math.max(0.0002, peak), t + 0.18);
+      g.gain.exponentialRampToValueAtTime(Math.max(0.0002, peak), t + (bgm.attack || 0.18));
       g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
       osc.connect(g);
       g.connect(bgmGain);
+      // 八音盒的 BGM 也挂一条高泛音，否则切主题只有音效变了、背景还是同一副嗓子
+      if (bgm.partial) {
+        const po = ctx.createOscillator();
+        const pg = ctx.createGain();
+        po.type = bgm.wave || 'sine';
+        po.frequency.value = hz * (bgm.partial.ratio || 3);
+        pg.gain.setValueAtTime(0.0001, t);
+        pg.gain.exponentialRampToValueAtTime(Math.max(0.0002, peak * (bgm.partial.gain || 0.15)), t + 0.01);
+        pg.gain.exponentialRampToValueAtTime(0.0001, t + dur * 0.5);
+        po.connect(pg);
+        pg.connect(bgmGain);
+        po.start(t);
+        po.stop(t + dur * 0.5 + 0.02);
+        po.onended = () => { try { po.disconnect(); pg.disconnect(); } catch (e) { /* noop */ } };
+      }
       osc.start(t);
       osc.stop(t + dur + 0.02);
       osc.onended = () => { try { osc.disconnect(); g.disconnect(); } catch (e) { /* noop */ } };
@@ -6230,7 +6348,7 @@ function boot() {
       if (tr) {
         AudioBus.setTheme(tr);
         view.soundTheme = AudioBus.soundTheme;
-        AudioBus.play('ability');   // 选完即时试听
+        AudioBus.play('preview');   // 选完即时试听（四音琶音，足够听出音色差异）
         return true;
       }
       view.about = false;

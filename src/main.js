@@ -444,7 +444,7 @@ export function boot() {
       if (tr) {
         AudioBus.setTheme(tr);
         view.soundTheme = AudioBus.soundTheme;
-        AudioBus.play('ability');   // 选完即时试听
+        AudioBus.play('preview');   // 选完即时试听（四音琶音，足够听出音色差异）
         return true;
       }
       view.about = false;
