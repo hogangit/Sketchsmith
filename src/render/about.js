@@ -21,7 +21,7 @@ const ABT_UI = 'system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-ser
 const ABT_SERIF = '"Songti SC","Noto Serif SC","Source Han Serif SC",serif';
 
 /** 卡片几何（main.js 的命中判定与绘制共用，避免两处写死坐标对不上） */
-export const ABOUT_CARD = { x: 40, y: 236, w: DESIGN_W - 80, h: 420 };
+export const ABOUT_CARD = { x: 40, y: 224, w: DESIGN_W - 80, h: 486 };
 /** 「知道了」按钮 */
 export function aboutCloseRect() {
   return { x: DESIGN_W / 2 - 54, y: ABOUT_CARD.y + ABOUT_CARD.h - 56, w: 108, h: 34 };
@@ -44,6 +44,33 @@ export function aboutThemeHit(x, y) {
   for (const r of aboutThemeRects()) {
     if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) return r.id;
   }
+  return null;
+}
+
+/**
+ * 「语音朗读」控件的几何：左开关（开/关）+ 右音色条（‹ 名字 ›）。
+ * 音色条整条都能点（点左半边上一个、右半边下一个），但左右箭头各有自己的命中区，
+ * 玩家点小箭头时不会因为差 2px 而切成反方向。
+ */
+export function aboutVoiceRects() {
+  const c = ABOUT_CARD;
+  const y = c.y + 384;
+  const toggle = { x: c.x + 34, y, w: 52, h: 30 };
+  const stripW = c.x + c.w - 34 - (toggle.x + toggle.w + 10);
+  const strip = { x: toggle.x + toggle.w + 10, y, w: stripW, h: 30 };
+  const prev = { x: strip.x, y, w: 28, h: 30 };
+  const next = { x: strip.x + strip.w - 28, y, w: 28, h: 30 };
+  const name = { x: prev.x + prev.w, y, w: strip.w - 56, h: 30 };
+  return { toggle, strip, prev, next, name };
+}
+/** 命中测试：返回 'toggle' | 'prev' | 'next' | 'strip' | null */
+export function aboutVoiceHit(x, y) {
+  const r = aboutVoiceRects();
+  const inside = (b) => x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h;
+  if (inside(r.toggle)) return 'toggle';
+  if (inside(r.prev)) return 'prev';
+  if (inside(r.next)) return 'next';
+  if (inside(r.strip)) return 'strip';
   return null;
 }
 
@@ -159,6 +186,61 @@ export function drawAbout(ctx, view) {
     ctx.textAlign = 'center';
     ctx.fillText(r.label, r.x + r.w / 2, r.y + 22);
   }
+  ctx.textAlign = 'left';
+
+  // ── 语音朗读 ────────────────────────────────────────────────────────────
+  // 浏览器念台词用的是**系统自带的 TTS**，音质随设备天差地别：
+  // 有「在线自然」音色的设备像人，只有老 Huihui 的设备像机器人。
+  // 所以这里给两件事：换音色（换成最像人的那个）、关掉（只用字幕）。
+  const vOn = !!(view && view.voiceOn);
+  const vCount = (view && view.voiceCount) || 0;
+  ctx.font = `11px ${ABT_UI}`;
+  ctx.fillStyle = ABT_INK_SOFT;
+  ctx.textAlign = 'left';
+  ctx.fillText('语音', x, c.y + 372);
+
+  const vr = aboutVoiceRects();
+  // 开关
+  ctx.fillStyle = vOn ? 'rgba(63,107,79,0.16)' : 'rgba(246,241,227,0.95)';
+  abtRoundRect(ctx, vr.toggle.x, vr.toggle.y, vr.toggle.w, vr.toggle.h, 8);
+  ctx.fill();
+  ctx.strokeStyle = vOn ? 'rgba(63,107,79,0.75)' : 'rgba(90,80,64,0.55)';
+  ctx.lineWidth = 1.3;
+  ctx.stroke();
+  ctx.fillStyle = vOn ? '#3f6b4f' : ABT_INK_SOFT;
+  ctx.font = `600 13px ${ABT_UI}`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(vCount === 0 ? '无' : (vOn ? '开' : '关'), vr.toggle.x + vr.toggle.w / 2, vr.toggle.y + 16);
+  ctx.textBaseline = 'alphabetic';
+
+  // 音色条
+  ctx.fillStyle = 'rgba(246,241,227,0.80)';
+  abtRoundRect(ctx, vr.strip.x, vr.strip.y, vr.strip.w, vr.strip.h, 8);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(90,80,64,0.45)';
+  ctx.lineWidth = 1.2;
+  ctx.stroke();
+
+  const canSwitch = vCount > 1 && vOn;
+  ctx.font = `13px ${ABT_UI}`;
+  ctx.fillStyle = canSwitch ? ABT_INK_MID : 'rgba(56,49,42,0.24)';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('‹', vr.prev.x + vr.prev.w / 2, vr.strip.y + 14);
+  ctx.fillText('›', vr.next.x + vr.next.w / 2, vr.strip.y + 14);
+
+  let vLabel;
+  if (vCount === 0) vLabel = '此设备没有中文语音';
+  else if (!vOn) vLabel = '已关闭 · 台词只显示字幕';
+  else {
+    vLabel = (view && view.voiceName) || '默认音色';
+    if (vCount > 1) vLabel += '  ' + ((view.voiceIndex || 1) + '/' + vCount);
+  }
+  ctx.font = `12px ${ABT_UI}`;
+  ctx.fillStyle = vOn && vCount > 0 ? ABT_INK : ABT_INK_SOFT;
+  ctx.fillText(vLabel, vr.name.x + vr.name.w / 2, vr.strip.y + 15);
+  ctx.textBaseline = 'alphabetic';
   ctx.textAlign = 'left';
 
   // 「知道了」按钮

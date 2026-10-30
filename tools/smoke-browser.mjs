@@ -150,6 +150,18 @@ async function main() {
       if (th.about !== true) failures.push('点声音风格芯片时面板被误关（应保持打开）');
       if (th.t !== 'musicbox' || th.ls !== 'musicbox') failures.push(`声音风格切换/持久化失败（view=${th.t}, ls=${th.ls}）`);
       else console.log('[smoke] 声音风格 → 点「八音盒」切换并持久化 OK（面板不关）');
+      // 语音朗读开关（用户投诉"说话的语音难听"后新增的出口）：必须点得到、状态落盘
+      const vc0 = JSON.parse(await evalJs(`JSON.stringify({n:__WCWZ__.view.voiceCount, on:__WCWZ__.view.voiceOn, name:__WCWZ__.view.voiceName})`));
+      await click(100, 623);   // 「语音」开/关（x 74..126, y 608..638 的中心）
+      await sleep(200);
+      const vo = JSON.parse(await evalJs(`JSON.stringify({about:__WCWZ__.view.about, on:__WCWZ__.view.voiceOn, ls:(typeof localStorage!=='undefined')?localStorage.getItem('wcwz_voice_on'):null})`));
+      if (vo.about !== true) failures.push('点语音开关时面板被误关（应保持打开）');
+      if (vo.on === vc0.on) failures.push(`语音开关点下去状态没变（一直是 ${vc0.on}）`);
+      if (vo.ls !== (vo.on ? '1' : '0')) failures.push(`语音开关未落盘（on=${vo.on}, ls=${vo.ls}）`);
+      else console.log(`[smoke] 语音 → ${vc0.n} 个中文音色，默认「${vc0.name || '无'}」，开关可点并落盘 ✔`);
+      await click(100, 623);   // 再点回来：别把"关闭朗读"的状态带进后面的关卡
+      await sleep(160);
+      if (await evalJs('__WCWZ__.view.voiceOn') !== vc0.on) failures.push('语音开关点回原状态失败');
       await click(215, 420);   // 卡片内部任意处
       await sleep(220);
       if (await evalJs('__WCWZ__.view.about === false') !== true) failures.push('「关于」浮层点击后未关闭');

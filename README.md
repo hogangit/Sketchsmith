@@ -31,6 +31,7 @@ node tools/build.mjs                 # 生成 dist/game.html + 根目录 index.h
   node tests/roll.test.mjs          # `会滚`（D16）11 条断言 + friction=0 反证
   node tests/roll-calib.mjs         # `会滚` 口径标定：median/p90 + negative control（8° 台架）
   node --test tests/voice-scheduler.test.mjs  # 语音排队/配额 10 条（C.1 五步 / C.1b 抢占与终止 / C.2 两套额度）
+  node tests/voice-config.mjs       # 语音音色 6 条（默认挑最佳 / 可换可关 / 换设备不失声，假 speechSynthesis 捕获真实合成对象）
   node tests/l2-acceptance.mjs      # 关2 判据 1a/1b/1c/2/3/4/5（1a/7 已作废，仍报数留证）
   node tests/l2-passable.mjs        # 关2 到底能不能过：3 个落位 × 5 种造物 × 5 个落点
   node tests/probe-l2-endstates.mjs # 四个终态**真实可达性**（哪句台词在玩法里是死的）
@@ -228,6 +229,25 @@ L3 团块+变重 → 过关（1.8s, form=wheel）
 
 **未完成**：`isOnScreen` 目前恒为 `true`（关卡还没有镜头推拉），C5 因此不会被真实触发；
 等有相机可视区再改 `main.js` 里那一个函数即可（C.5 唯一需要动主程序的地方）。
+
+### 五之四、台词音色（D33）——「说话的语音难听」这条反馈怎么落地
+
+念台词用的是**系统自带 TTS**（`speechSynthesis`），音质由**玩家设备上装了哪些音色**决定，
+游戏自己换不了引擎。所以能做且做了三件事（「关于」面板）：
+
+| 能力 | 行为 | 验证 |
+|---|---|---|
+| **默认挑最佳音色** | 按打分排序：名字含 `Online`/`Natural` 的神经音色 +100，`Xiaoxiao/Yunxi/…` +40，Google +30，本地合成 −12。**有自然音色就绝不用 Huihui 这类机械音** | 假 `speechSynthesis` 装 4 个音色，断言选中的是「Xiaoxiao 自然」 |
+| **能换** | 音色条 `‹ 名字 ›` 循环切换，切换立即用同一句试听（`VOICE_TRY`，便于 A/B 对比）；选择存 `localStorage['wcwz_voice_uri']`；存档音色在新设备上不存在时**静默回落到最佳**，绝不静默失声 | 切换 → 落盘 → 试听的 `utterance.voice` 就是新音色；删掉存档音色后回落仍出声 |
+| **能关** | 一键关掉朗读：`speak()` 返回 `'muted'`、**一次都不调** `speechSynthesis`，台词只走字幕；开关存 `wcwz_voice_on`。手动试听不受开关影响（点了没反应会被当成坏了） | 关掉后 8 次 `tickVoice` 零合成；关→开→再 `speak` 能真正出声 |
+
+另外两处听感参数：`rate=0.94`（慢一点才有讲故事感，念快了是新闻播报腔）、`pitch=1.0`（不动音高——压/抬音高只会更像机器人）。
+
+**同批修掉的两个真 bug**（都是单测/规格对不上时发现的）：
+- `AudioBus.speak()` 早先 `return res !== 'rejected'`，而调度器**从来不返回 `'rejected'`**（它返回 `dropped`）→ 这个断言恒为 `true`，等于没判。现在按 C.1c 返回六态字符串 `'queued'|'deferred'|'blocked'|'dropped'|'muted'|'unavailable'`。
+- 调度器对外报 `'started'`，而 C.1c 明确「不许返回已播」（`onstart` 是异步的）→ 现在 `request()` 把 `'started'` 归一成 `'queued'`，`'started'` 只作内部事件。
+
+**未验证**：iOS Safari 只有 `Tingting` 这类本地音色，听感仍偏机械——真机未测；移动端用户最可能的出口是「关掉朗读」。
 
 ## 六、没做完 / 明确是占位
 

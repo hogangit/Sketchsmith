@@ -84,8 +84,9 @@ export function createVoiceScheduler(o) {
 
   /**
    * 推进一步：① C5 → ② 只读预检 → ③ C4 → ④ 超时 → ⑤ 起播
-   * 返回六态口径的结果（见文件头的 C.1c）：'started' | 'queued' | 'deferred' | 'blocked' | 'dropped'。
-   * **永远不会返回 'played'**：onstart 是异步的，同步说"已播"是假信息。
+   * 内部口径：'started' | 'queued' | 'deferred' | 'blocked' | 'dropped'。
+   * `request()` 会把 'started' 归一成 'queued'——对外只暴露 C.1c 的四态，
+   * 因为「已调用 backend.speak」不等于「已出声」（onstart 是异步的）。
    */
   function pump() {
     if (playing || !pending) return 'queued';       // 有句在播 → 排队等着
@@ -116,21 +117,23 @@ export function createVoiceScheduler(o) {
     return 'started';
   }
 
+  /** 对内 'started' 只表示「已交给 backend」，对外一律报 'queued'（C.1c 没有「已播」态） */
+  function norm(r) { return r === 'started' ? 'queued' : r; }
+
   const api = {
     /**
-     * 请求播一句。返回 'started' | 'queued' | 'deferred' | 'blocked' | 'dropped'（C.1c 六态的前半段）。
-     * **不会返回 'played'**——真正起播另走 `onSpoken` 回调。
-     * **这里不扣费**——扣费只发生在 backend 的 onStart 回调里。
+     * 请求播一句。返回（C.1c 口径）'queued' | 'deferred' | 'blocked' | 'dropped'。
+     * **永远不会返回 'played'**——真正起播另走 `onSpoken` 回调；**这里也不扣费**。
      */
     request({ lineId, text, speaker, level, textMs }) {
       const lv = level || LINE_LEVEL.AMBIENT;
       const make = () => ({ lineId, text, speaker, level: lv, textMs, enqueuedAt: now(), notBefore: 0, suspended: false });
-      if (!pending) { pending = make(); return pump(); }
+      if (!pending) { pending = make(); return norm(pump()); }
       // 队满：抢占**尚未起播的最低级别**（不扣费）
       if (!canPreempt(lv)) return 'dropped';             // 不可抢占的句子不许挤掉别人
       if (!canPreempt(pending.level)) return 'dropped';  // 正在等的不可抢占 → 只能拒新的
       // 同级别不换（先到先等，避免同级来回颠簸）；只有"新的更重要"才抢占等待位
-      if (pending.level > lv) { pending = make(); return pump(); }
+      if (pending.level > lv) { pending = make(); return norm(pump()); }
       return 'dropped';                                  // 新的不比在等的更重要 → 拒
     },
 

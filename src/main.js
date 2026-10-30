@@ -19,7 +19,7 @@ import {
   drawAmbient,
 } from './render/scenery.js';
 import { drawTitleCard } from './render/title-card.js';
-import { drawAbout, aboutThemeHit } from './render/about.js';
+import { drawAbout, aboutThemeHit, aboutVoiceHit } from './render/about.js';
 import { chipIndexAt, drawHud, headerButtonAt, pickFailHint } from './render/hud.js';
 import { createStrokeCapture } from './stroke/capture.js';
 import { analyzeStrokeGroup } from './stroke/classify.js';
@@ -99,6 +99,10 @@ export function boot() {
     audioUnlocked: false,
     soundTheme: AudioBus.soundTheme,   // 当前声音风格（暖木/八音盒/陶笛），「关于」面板里切换
     voiceMode: 'unknown',
+    voiceOn: true,          // 台词朗读开关（「关于」里可关，关掉后只显示字幕）
+    voiceName: '',          // 当前系统音色短名（None/无中文语音时为空）
+    voiceCount: 0,          // 系统里可用的中文音色个数（决定 ‹ › 能不能点）
+    voiceIndex: 1,          // 当前音色在列表里的序号（1 起）
     livePoints: 0,
     now: 0,
   };
@@ -171,10 +175,10 @@ export function boot() {
    * **扣额度的时序**：`exhausted()` 只查不扣，`take()` 在真正交付之后才扣。
    * 被音频层拦下（C4 延后 / C5 不在画面内 / 超时丢弃）的那一次**一次都不许扣** ——
    * 否则整局 2 次额度会被三个"没播出去"的句子烧光，后面的关就没兜底了。
-   * [待音频契约] 现在 `AudioBus.speak()` 只返回 boolean（分不出"播了 / 被延后 / 被拦下"），
-   * 而气泡是必出的，所以当前交付点 = 气泡出现。等 audio-director 把 speak 的三态契约定下来，
-   * 这里改成 `if (voiceOutcome === 'played' || AudioBus.voiceMode === 'bubble') quota.take(id)`，
-   * 只动这一行——所以现在就把"查"和"扣"拆成两个口子。
+   * [已定契约 C.1c] `AudioBus.speak()` 现在返回六态字符串（'queued' / 'deferred' /
+   * 'blocked' / 'dropped' / 'muted' / 'unavailable'），能分清"交给后端 / 被延后 / 被拦下"。
+   * 但这里的额度是**文字额度**，交付点就是文字出现：气泡必出，所以无论语音走哪条路都扣。
+   * 语音额度是另一套（voice-scheduler.budget），别混。
    */
   const allowRunLine = createLineQuota(2);
   const allowLevelLine = createLineQuota(2);
@@ -437,9 +441,47 @@ export function boot() {
   });
 
   // ---- 输入 ----
+  /** 把音频层的语音配置搬到 view（「关于」面板据此画开/关与音色名） */
+  function syncVoiceView() {
+    const cfg = AudioBus.voiceConfig;
+    const list = AudioBus.voiceList;
+    view.voiceOn = cfg.on;
+    view.voiceCount = list.length;
+    let idx = 0;
+    for (let i = 0; i < list.length; i++) if (list[i].uri === cfg.uri) { idx = i; break; }
+    view.voiceIndex = list.length ? idx + 1 : 0;
+    view.voiceName = cfg.name || '';
+  }
+  /** 打开「关于」：先刷新音色表（有的浏览器音色是异步到达的），再同步到 view */
+  function openAbout() {
+    AudioBus.refreshVoices();
+    syncVoiceView();
+    view.about = true;
+    AudioBus.play('ui');
+  }
+
   function handleUiTap(x, y) {
-    // 「关于」展开时：先判声音风格芯片（点中则换主题、不关面板），其余任意点关闭
+    // 「关于」展开时：先判语音控件与声音风格芯片（点中就地改设置、不关面板），其余任意点关闭
     if (view.about) {
+      const vh = aboutVoiceHit(x, y);
+      if (vh) {
+        if (vh === 'toggle') {
+          const on = AudioBus.setVoiceOn(!view.voiceOn);
+          syncVoiceView();
+          AudioBus.play('ui');
+          // 打开时念一句当作确认；关掉不弹 toast——音色条已经写着「已关闭 · 台词只显示字幕」，
+          // 面板内的状态变化本身就是反馈，弹 toast 只会把正在显示的台词顶掉。
+          if (on) AudioBus.previewVoice('朗读打开了。');
+        } else if (view.voiceCount > 1 && view.voiceOn) {
+          const name = AudioBus.cycleVoice(vh === 'prev' ? -1 : 1);
+          syncVoiceView();
+          AudioBus.play('ui');
+          if (name) AudioBus.previewVoice();   // 换完立刻念同一句，方便两两对比
+        } else if (view.voiceCount === 0) {
+          toast('这台设备没装中文语音，台词只显示字幕。', 2600);
+        }
+        return true;
+      }
       const tr = aboutThemeHit(x, y);
       if (tr) {
         AudioBus.setTheme(tr);
@@ -457,7 +499,7 @@ export function boot() {
       const wb = headerButtonAt(x, y);
       if (wb === 'retry') { AudioBus.play('ui'); retryLevel(); return true; }
       if (wb === 'audio') { view.audioOn = !view.audioOn; AudioBus.setEnabled(view.audioOn); AudioBus.play('ui'); return true; }
-      if (wb === 'about') { view.about = true; AudioBus.play('ui'); return true; }
+      if (wb === 'about') { openAbout(); return true; }
       if (view.levelIndex >= GAME_LEVELS.length - 1) { view.levelIndex = 0; buildWorld(); say(view.level.lines.intro, 3200); }
       else nextLevel();
       return true;
@@ -481,7 +523,7 @@ export function boot() {
       toast('清空了。画点新的吧。', 2200);
       return true;
     }
-    if (btn === 'about') { view.about = true; AudioBus.play('ui'); return true; }
+    if (btn === 'about') { openAbout(); return true; }
     if (btn === 'retry') { AudioBus.play('ui'); retryLevel(); return true; }
     if (btn === 'audio') {
       view.audioOn = !view.audioOn;

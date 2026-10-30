@@ -163,7 +163,27 @@ export function createAudioBus() {
   let sfxLive = 0;
   let nodeCount = 0;
   const queue = [];             // 未解锁前的 pendown/spawn 排队
-  const voiceState = { available: null, mode: 'unknown', unlockedVoice: false };
+  const voiceState = { available: null, mode: 'unknown', unlockedVoice: false, voices: [], listening: false };
+
+  // ── 语音（TTS）配置：音色可选，选不中还能整个关掉 ──────────────────────────
+  // 浏览器 TTS 的音质**完全取决于这台设备装了什么音色**：Edge 的「Online (Natural)」
+  // 神经音色听起来像人，Windows 自带的 Huihui / Yaoyao 则是标准机器人腔。
+  // 单文件离线游戏换不了引擎，能做的是把选择权交出去：
+  //   · 默认自动挑分数最高的那个（有自然音色就绝不用本地机械音）；
+  //   · 用户点「‹ ›」循环切换，切换即试听；
+  //   · 实在都难听，一键关掉朗读——台词只走字幕，游戏本身不受影响。
+  const VOICE_URI_KEY = 'wcwz_voice_uri';
+  const VOICE_ON_KEY = 'wcwz_voice_on';
+  /** 试听句：短、有起伏、含常见字，最容易听出音色差别 */
+  const VOICE_TRY = '你好呀，我是一幅会动的画。';
+  const voiceCfg = { on: true, uri: '', rate: 0.94, pitch: 1.0 };
+  try {
+    if (typeof localStorage !== 'undefined') {
+      const u = localStorage.getItem(VOICE_URI_KEY);
+      if (u) voiceCfg.uri = u;
+      if (localStorage.getItem(VOICE_ON_KEY) === '0') voiceCfg.on = false;
+    }
+  } catch (e) { /* 隐私模式：用默认值 */ }
 
   // ── 声音风格（用户可切换）──
   let currentThemeId = 'warm';
@@ -181,13 +201,53 @@ export function createAudioBus() {
    * `isOnScreen` / `precheckQuota` 由主程序注入——音频层不认识关卡，也不该认识。
    */
   const voiceHooks = { isOnScreen: null, precheckQuota: null };
+
+  /**
+   * 音色打分：只服务一个目标——挑出这台设备上「最像人」的那个。
+   * Edge 的神经音色（名字带 Online / Natural）远好于系统本地音色；
+   * Google 的 zh 音色次之；Windows 自带 Huihui / Yaoyao 垫底，但总比没有强。
+   */
+  function voiceScore(v) {
+    const n = String(v && v.name || '').toLowerCase();
+    let s = 0;
+    if (/natural|online/.test(n)) s += 100;
+    if (/xiaoxiao|xiaoyi|yunxi|yunyang|yunjian|yunxia|yunting|xiaoqiu/.test(n)) s += 40;
+    if (/google/.test(n)) s += 30;
+    if (v && v.localService) s -= 12;      // 同等条件下，本地合成更机械
+    return s;
+  }
+  /** 音色短名：把 "Microsoft Xiaoxiao Online (Natural) - Chinese (Mainland)" 压成 "Xiaoxiao 自然" */
+  function shortVoiceName(n) {
+    let s = String(n || '').replace(/^microsoft\s*/i, '').replace(/\s*-\s*chinese.*$/i, '');
+    s = s.replace(/\s*online\s*/i, ' ').replace(/\s*\(natural\)\s*/i, ' 自然').replace(/\s+/g, ' ').trim();
+    if (s.length > 16) s = s.slice(0, 15) + '…';
+    return s || '默认音色';
+  }
+  /** 当前选中的音色对象；没选过就取打分第一（不写 localStorage，换设备后能自动重挑） */
+  function currentVoice() {
+    const list = voiceState.voices || [];
+    if (!list.length) return null;
+    for (let i = 0; i < list.length; i++) if (list[i].voiceURI === voiceCfg.uri) return list[i];
+    return list[0];
+  }
+  /** 有的浏览器 getVoices() 首次为空、随后异步补齐——没这个监听就会一直判「没有中文语音」 */
+  function installVoicesListener() {
+    if (voiceState.listening || typeof speechSynthesis === 'undefined' || !speechSynthesis.addEventListener) return;
+    voiceState.listening = true;
+    try { speechSynthesis.addEventListener('voiceschanged', () => { probeVoices(); }); } catch (e) { /* 老浏览器无此事件 */ }
+  }
+
   const voiceBackend = {
     speak(req) {
       try {
         const u = new SpeechSynthesisUtterance(req.text || req.lineId);
-        u.lang = voiceState.voiceLang || 'zh-CN';
-        u.volume = 1;
-        u.rate = 0.98;
+        const v = currentVoice();
+        if (v) u.voice = v;
+        u.lang = (v && v.lang) || voiceState.voiceLang || 'zh-CN';
+        // 语速略慢、音高不动：念台词要有"讲故事"的停顿感，念快了就变新闻播报腔
+        u.rate = voiceCfg.rate;
+        u.pitch = voiceCfg.pitch;
+        u.volume = 0.92;
         u.onstart = () => { if (req.onStart) req.onStart(); };
         u.onend = () => { if (req.onEnd) req.onEnd(); };
         u.onerror = () => { if (req.onError) req.onError(); };
@@ -209,9 +269,16 @@ export function createAudioBus() {
     let list = [];
     try { list = speechSynthesis.getVoices() || []; } catch (e) { list = []; }
     const zh = list.filter((v) => /^zh/i.test(v.lang || ''));
+    zh.sort((a, b) => voiceScore(b) - voiceScore(a));   // 天然音色排前面，UI 顺序＝推荐顺序
+    voiceState.voices = zh;
     voiceState.available = zh.length > 0;
-    voiceState.mode = zh.length > 0 ? 'voice' : 'bubble';
-    if (zh.length) voiceState.voiceLang = zh[0].lang;
+    voiceState.mode = zh.length > 0 ? (voiceCfg.on ? 'voice' : 'off') : 'bubble';
+    // 用户选过的音色如果这台设备上没有（换设备 / 卸了语音包），静默回落到最佳
+    if (voiceCfg.uri && !zh.some((v) => v.voiceURI === voiceCfg.uri)) voiceCfg.uri = '';
+    if (!voiceCfg.uri && zh.length) voiceCfg.uri = zh[0].voiceURI;
+    const cur = currentVoice();
+    voiceState.voiceLang = (cur && cur.lang) || 'zh-CN';
+    installVoicesListener();
     return voiceState.available;
   }
 
@@ -516,32 +583,37 @@ export function createAudioBus() {
     },
 
     /**
-     * 契约：speak(lineId, text, opts)。
-     * opts = { speaker?, level?, textMs?, onScreen?, precheck? }
+     * 契约：speak(lineId, text, opts) → C.1c 六态字符串（**不是 boolean**）。
+     * opts = { speaker?, level?, textMs? }
      *   · speaker   用于 C4 同音色 45s 间隔
      *   · level     C.1b 级别（1 成功/盖章 2 受额度约束 3 开场 4 环境）
-     *   · onScreen  C5 前置条件，**由主程序提供**（不在画面内 → 挂起而不是丢弃）
-     *   · precheck  C.1 第 2 步的**只读**文字额度预检
      *
-     * 出声与否由 voiceScheduler 按 C.1 的五步决定；这里只负责"把真 backend 接上去"。
-     * 返回值：true = 已起播（或已入队），false = 通道不可用/被拒（上层照常给气泡）。
+     * 返回值：
+     *   'queued'      已进队列 / 已交给后端（未确认出声、未扣额度）
+     *   'deferred'    被 C4 同音色间隔延后，到点自动起播，未扣
+     *   'blocked'     被 C5 拦下并挂起（说话人未入画），未扣
+     *   'dropped'     额度耗尽 / 队列满 / 超时 / 未声明 id → 丢弃，未扣
+     *   'muted'       绘制中静默，或用户关掉了朗读 → 只出文字
+     *   'unavailable' 无中文语音引擎（bubble 模式）或尚未解锁
+     * **永远不返回「已播」**：onstart 是异步的，同步说"播了"是假信息。
+     * 上层据此只决定"要不要额外做点什么"；气泡无论如何都会出（文字是信息通道）。
      */
     speak(lineId, text, opts) {
       const o2 = opts || {};
-      if (!lineId && !text) return false;
-      if (drawing) return false;                       // 绘制期间任何语音都不许起播（硬规则）
-      if (!unlocked) return false;                     // 不进队列：延迟台词比不播更糟
-      if (voiceState.available == null) probeVoices();
-      if (!voiceState.available) return false;         // 无中文语音 → 上层走气泡，绝不用英文念中文
-      if (typeof speechSynthesis === 'undefined') return false;
-      const res = voiceScheduler.request({
+      if (!lineId && !text) return 'dropped';
+      if (drawing) return 'muted';                     // 绘制期间任何语音都不许起播（硬规则）
+      if (!voiceCfg.on) return 'muted';                // 用户关掉了朗读 → 只走字幕，不占调度器
+      if (!unlocked) return 'unavailable';             // 不进队列：延迟台词比不播更糟
+      if (voiceState.available == null || !voiceState.available) probeVoices();
+      if (!voiceState.available) return 'unavailable'; // 无中文语音 → 上层走气泡，绝不用英文念中文
+      if (typeof speechSynthesis === 'undefined') return 'unavailable';
+      return voiceScheduler.request({
         lineId: lineId || text,
         text: text || lineId,
         speaker: o2.speaker || 'narrator',
         level: o2.level == null ? LINE_LEVEL.AMBIENT : o2.level,
         textMs: o2.textMs,
       });
-      return res !== 'rejected';
     },
 
     /** C.1b 抢占（尚未起播）：不扣额度 */
@@ -577,12 +649,78 @@ export function createAudioBus() {
       if (Number.isFinite(m)) modeId = m | 0;
     },
 
-    /** 切换声音风格（用户选择）：warm / musicbox / ocarina，持久化到 localStorage */
+    /**
+     * 切换声音风格（用户选择）：warm / musicbox / ocarina，持久化到 localStorage
+     */
     setTheme(id) {
       if (!SOUND_THEMES[id]) return;
       currentThemeId = id;
       theme = SOUND_THEMES[id];
       try { if (typeof localStorage !== 'undefined') localStorage.setItem('wcwz_sound_theme', id); } catch (e) { /* 忽略 */ }
+    },
+
+    // ── 语音（TTS）对外接口：音色选择 / 朗读开关 / 试听 ────────────────────────
+
+    /** 重新探测系统音色（打开「关于」面板时调一次，补齐延迟加载的音色） */
+    refreshVoices() { probeVoices(); return voiceState.voices.length; },
+
+    /** 可选音色列表（顺序＝推荐顺序，第一个是自动挑出的默认） */
+    get voiceList() {
+      if (!voiceState.voices.length) probeVoices();
+      return (voiceState.voices || []).map((v) => ({
+        uri: v.voiceURI, name: shortVoiceName(v.name), lang: v.lang,
+      }));
+    },
+
+    /** 当前语音配置（给 UI 画状态；name 已压缩成短名） */
+    get voiceConfig() {
+      const cur = currentVoice();
+      return { on: voiceCfg.on, uri: voiceCfg.uri, name: cur ? shortVoiceName(cur.name) : '' };
+    },
+
+    /** 朗读开关：关掉后 speak() 直接返回 false，台词只走字幕 */
+    setVoiceOn(on) {
+      voiceCfg.on = !!on;
+      try { if (typeof localStorage !== 'undefined') localStorage.setItem(VOICE_ON_KEY, voiceCfg.on ? '1' : '0'); } catch (e) { /* 忽略 */ }
+      voiceState.mode = voiceState.available ? (voiceCfg.on ? 'voice' : 'off') : 'bubble';
+      // 关掉时掐断正在念的那句——走 voiceBackend.cancel() 这个唯一出口（不许各处自己 cancel）
+      if (!voiceCfg.on) voiceBackend.cancel();
+      return voiceCfg.on;
+    },
+
+    /** 换上一个/下一个音色，返回新的短名（列表不足 2 个时返回空串＝没得换） */
+    cycleVoice(dir) {
+      const list = voiceState.voices || [];
+      if (list.length < 2) return '';
+      let i = 0;
+      for (let k = 0; k < list.length; k++) if (list[k].voiceURI === voiceCfg.uri) { i = k; break; }
+      const n = (i + (dir < 0 ? -1 : 1) + list.length) % list.length;
+      voiceCfg.uri = list[n].voiceURI;
+      voiceState.voiceLang = list[n].lang || voiceState.voiceLang;
+      try { if (typeof localStorage !== 'undefined') localStorage.setItem(VOICE_URI_KEY, voiceCfg.uri); } catch (e) { /* 忽略 */ }
+      return shortVoiceName(list[n].name);
+    },
+
+    /**
+     * 试听：**绕过 scheduler**。这是用户主动点出来的声音，不该排队、不该被额度或
+     * 「绘制中静默」拦下——点了没反应会被当成功能坏了。
+     */
+    previewVoice(text) {
+      if (typeof speechSynthesis === 'undefined') return false;
+      if (!voiceState.voices.length) probeVoices();
+      const v = currentVoice();
+      if (!v) return false;
+      try {
+        voiceBackend.cancel();   // 同上：取消只走这一个出口
+        const u = new SpeechSynthesisUtterance(text || VOICE_TRY);
+        u.voice = v;
+        u.lang = v.lang || 'zh-CN';
+        u.rate = voiceCfg.rate;
+        u.pitch = voiceCfg.pitch;
+        u.volume = 0.95;
+        speechSynthesis.speak(u);
+        return true;
+      } catch (e) { return false; }
     },
 
     /** P1：setVolume(bus, v) */
@@ -598,7 +736,11 @@ export function createAudioBus() {
     get unlocked() { return unlocked; },
     get unlockAt() { return unlockAt; },
     get soundTheme() { return currentThemeId; },
-    get voiceMode() { if (voiceState.available == null) probeVoices(); return voiceState.mode; },
+    get voiceMode() {
+      if (voiceState.available == null) probeVoices();
+      if (!voiceState.available) return 'bubble';
+      return voiceCfg.on ? 'voice' : 'off';   // off = 有音色但用户主动关掉了朗读
+    },
     get state() { return ctx ? ctx.state : 'none'; },
     get nodeCount() { return nodeCount; },
     get sfxLive() { return sfxLive; },

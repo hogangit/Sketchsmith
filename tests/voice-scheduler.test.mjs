@@ -45,7 +45,7 @@ function harness({ onScreen = true, quota = true } = {}) {
 
 test('C.1 ⑤ 唯一扣费点：没起播就不许扣', () => {
   const h = harness();
-  assert.equal(h.s.request({ lineId: 'l1_win', speaker: '农夫', level: LINE_LEVEL.SUCCESS }), 'speaking');
+  assert.equal(h.s.request({ lineId: 'l1_win', speaker: '农夫', level: LINE_LEVEL.SUCCESS }), 'queued');
   assert.equal(h.lines(), 0, '请求播出 ≠ 已播出，onstart 之前不许扣');
   h.fireStart();
   assert.equal(h.lines(), 1, 'onstart 之后才扣 1 次');
@@ -53,7 +53,7 @@ test('C.1 ⑤ 唯一扣费点：没起播就不许扣', () => {
 
 test('C.1 ① C5 挂起：不在画面内不扣、不丢；入画后正常播且只扣 1 次', () => {
   const h = harness({ onScreen: false });
-  assert.equal(h.s.request({ lineId: 'l3_intro', speaker: '水泵', level: LINE_LEVEL.INTRO }), 'queued');
+  assert.equal(h.s.request({ lineId: 'l3_intro', speaker: '水泵', level: LINE_LEVEL.INTRO }), 'blocked');
   assert.equal(h.lines(), 0, 'C5 拦下不许扣');
   assert.ok(h.s.state.pending, 'C5 是**挂起**不是丢弃（关3 水泵那句还等着入画）');
   h.advance(2000);
@@ -112,22 +112,22 @@ test('C.1b 队列满（1 在播 + 1 等待）：丢的是"尚未起播的最低�
   assert.equal(h.s.state.pending.lineId, 'l4_intro', '更高级别的开场应挤掉环境句');
   // 队满，新来一条更低优先级 → 新的被拒，等待位不动
   const r = h.s.request({ lineId: 'amb_b', speaker: 'C', level: LINE_LEVEL.AMBIENT });
-  assert.equal(r, 'rejected', '更低优先级的句子不该挤掉已经等待的句子');
+  assert.equal(r, 'dropped', '更低优先级的句子不该挤掉已经等待的句子');
   assert.equal(h.s.state.pending.lineId, 'l4_intro');
   // 同级不换（先到先等，避免同级来回颠簸）
-  assert.equal(h.s.request({ lineId: 'amb_c', speaker: 'C', level: LINE_LEVEL.INTRO }), 'rejected');
+  assert.equal(h.s.request({ lineId: 'amb_c', speaker: 'C', level: LINE_LEVEL.INTRO }), 'dropped');
   // 受额度约束的句子在等时，任何可抢占的句子都不许挤掉它
   h.s.dropPending();
   h.s.request({ lineId: 'common_fail2', speaker: 'D', level: LINE_LEVEL.SCOPED });
   const r2 = h.s.request({ lineId: 'amb_d', speaker: 'E', level: LINE_LEVEL.AMBIENT });
-  assert.equal(r2, 'rejected');
+  assert.equal(r2, 'dropped');
   assert.equal(h.s.state.pending.lineId, 'common_fail2', '受额度约束的等待句不许被抢占');
   assert.equal(h.lines(), 0, '这一路全是排队/被拒，一次都没起播 → 额度一次都不许扣');
 });
 
 test('C.1 ② 配额预检只读：额度不够就直接不出队，且不扣、不做 C4 延后', () => {
   const h = harness({ quota: false });
-  assert.equal(h.s.request({ lineId: 'common_fail2', speaker: '农夫', level: LINE_LEVEL.SCOPED }), 'queued');
+  assert.equal(h.s.request({ lineId: 'common_fail2', speaker: '农夫', level: LINE_LEVEL.SCOPED }), 'dropped');
   assert.equal(h.lines(), 0);
   assert.equal(h.s.state.pending, null, '预检不过 → 直接不出队（不留着等，避免白等 45s）');
 });
