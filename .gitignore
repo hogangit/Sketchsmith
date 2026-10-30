@@ -6,3 +6,7 @@ node_modules/
 .DS_Store
 Thumbs.db
 *.log
+
+# WorkBuddy 云部署本地追踪文件（非项目源码，按目录绑定发布应用）
+.wbapp_*.genie
+.workbuddy/applications.yaml
