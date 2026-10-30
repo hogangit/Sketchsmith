@@ -11,6 +11,7 @@
  * 构建门禁 D3 会拦「顶层名重复」。INK / roundRect 这些通用名会与 title-card.js、hud.js 撞。
  */
 import { DESIGN_W } from '../core/config.js';
+import { SOUND_THEMES } from '../audio/audio-bus.js';
 
 const ABT_INK = '#38312a';
 const ABT_INK_MID = 'rgba(56,49,42,0.70)';
@@ -20,10 +21,30 @@ const ABT_UI = 'system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-ser
 const ABT_SERIF = '"Songti SC","Noto Serif SC","Source Han Serif SC",serif';
 
 /** 卡片几何（main.js 的命中判定与绘制共用，避免两处写死坐标对不上） */
-export const ABOUT_CARD = { x: 40, y: 236, w: DESIGN_W - 80, h: 372 };
+export const ABOUT_CARD = { x: 40, y: 236, w: DESIGN_W - 80, h: 420 };
 /** 「知道了」按钮 */
 export function aboutCloseRect() {
   return { x: DESIGN_W / 2 - 54, y: ABOUT_CARD.y + ABOUT_CARD.h - 56, w: 108, h: 34 };
+}
+
+/**
+ * 「声音风格」选择芯片的几何（与绘制共用）。三档：暖木 / 八音盒 / 陶笛。
+ * main.js 在 view.about 为真时按这些矩形做命中判定，点中即换主题。
+ */
+export function aboutThemeRects() {
+  const c = ABOUT_CARD;
+  const ids = Object.keys(SOUND_THEMES);
+  const w = 86, h = 34, gap = 10;
+  const x0 = c.x + 34;
+  const y0 = c.y + 312;
+  return ids.map((id, i) => ({ id, label: SOUND_THEMES[id].label, x: x0 + i * (w + gap), y: y0, w, h }));
+}
+/** 命中测试：点中某枚声音风格芯片则返回其 id，否则 null */
+export function aboutThemeHit(x, y) {
+  for (const r of aboutThemeRects()) {
+    if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) return r.id;
+  }
+  return null;
 }
 
 function abtRoundRect(ctx, x, y, w, h, r) {
@@ -117,6 +138,28 @@ export function drawAbout(ctx, view) {
   // tools/check-single-file.mjs 用非贪婪正则抓「第一个 licenses 块」，
   // 注释或文案里的字面量会先被匹配到，导致真正的许可块被跳过后误判「缺失或不完整」。
   ctx.fillText('id="licenses" 的纯文本块（看页面源码可见）。', x, y + 66);
+
+  // 声音风格：让用户挑选音色（默认暖木，可换八音盒 / 陶笛）
+  const ty = c.y + 300;
+  ctx.font = `11px ${ABT_UI}`;
+  ctx.fillStyle = ABT_INK_SOFT;
+  ctx.textAlign = 'left';
+  ctx.fillText('声音风格', x, ty);
+  const themeId = (view && view.soundTheme) || 'warm';
+  for (const r of aboutThemeRects()) {
+    const sel = r.id === themeId;
+    ctx.fillStyle = sel ? 'rgba(63,107,79,0.16)' : 'rgba(246,241,227,0.95)';
+    abtRoundRect(ctx, r.x, r.y, r.w, r.h, 8);
+    ctx.fill();
+    ctx.strokeStyle = sel ? 'rgba(63,107,79,0.75)' : 'rgba(90,80,64,0.55)';
+    ctx.lineWidth = 1.3;
+    ctx.stroke();
+    ctx.fillStyle = sel ? '#3f6b4f' : '#3a352c';
+    ctx.font = `600 13px ${ABT_UI}`;
+    ctx.textAlign = 'center';
+    ctx.fillText(r.label, r.x + r.w / 2, r.y + 22);
+  }
+  ctx.textAlign = 'left';
 
   // 「知道了」按钮
   const btn = aboutCloseRect();

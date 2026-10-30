@@ -33,42 +33,61 @@ const AUDIO_BGM_GAIN = 0.16;
 
 /** 6 个 P0 音效配方（噪声源 | 振荡器 | 滤波 | 包络 | 时长），全部 [待实机标定] */
 export const AUDIO_SFX_RECIPES = {
-  pendown: { type: 'noise', noise: 'white', dur: 0.09, gain: 0.30, filter: { type: 'bandpass', f0: 2600, f1: 1400, q: 1.1 }, attack: 0.002 },
-  spawn: { type: 'tone', wave: 'triangle', f0: 220, f1: 132, dur: 0.34, gain: 0.24, attack: 0.006, filter: { type: 'lowpass', f0: 1800, f1: 500, q: 0.8 } },
-  ability: { type: 'tone', wave: 'sine', f0: 660, f1: 990, dur: 0.18, gain: 0.18, attack: 0.004 },
-  win: { type: 'tone', wave: 'triangle', f0: 523.25, f1: 783.99, dur: 0.55, gain: 0.22, attack: 0.008 },
-  fail: { type: 'tone', wave: 'sawtooth', f0: 196, f1: 98, dur: 0.40, gain: 0.16, attack: 0.004, filter: { type: 'lowpass', f0: 900, f1: 300, q: 1.2 } },
-  stamp: { type: 'noise', noise: 'brown', dur: 0.20, gain: 0.34, filter: { type: 'lowpass', f0: 900, f1: 180, q: 0.7 }, attack: 0.001 },
-  collide: { type: 'noise', noise: 'brown', dur: 0.12, gain: 0.20, filter: { type: 'lowpass', f0: 700, f1: 200, q: 0.9 }, attack: 0.001 },
-  ui: { type: 'tone', wave: 'square', f0: 440, f1: 440, dur: 0.05, gain: 0.10, attack: 0.002 },
-  // 关4 怕痒弹射小人：弹簧「boing」——快速上扫正弦 + 轻噪声尾，听感是「被弹起来」而非「被砸」
-  spring: { type: 'tone', wave: 'sine', f0: 300, f1: 640, dur: 0.22, gain: 0.20, attack: 0.003, filter: { type: 'lowpass', f0: 2200, f1: 900, q: 0.9 } },
-  // 关5 落水：环境水声——带通白噪，中心频率慢扫 400→1200Hz（水面感），[audio-spec 附录B sfx_water]
-  water: { type: 'noise', noise: 'white', dur: 0.40, gain: 0.26, filter: { type: 'bandpass', f0: 400, f1: 1200, q: 1.0 }, attack: 0.03 },
+  // 落笔：轻沙沙，短而柔（降增益、q 更柔，不再刺耳）
+  pendown: { type: 'noise', noise: 'white', dur: 0.09, gain: 0.22, filter: { type: 'bandpass', f0: 2400, f1: 1500, q: 0.8 }, attack: 0.003 },
+  // 生成造物：温润木琴「咚」——正弦下滑 + 轻低通，圆润不刺
+  spawn: { type: 'tone', wave: 'sine', f0: 392, f1: 262, dur: 0.30, gain: 0.22, attack: 0.006, filter: { type: 'lowpass', f0: 2200, f1: 900, q: 0.7 } },
+  // 贴能力：清亮「叮」，正弦上扬
+  ability: { type: 'tone', wave: 'sine', f0: 660, f1: 990, dur: 0.16, gain: 0.18, attack: 0.004 },
+  // 过关：上行小三和弦琶音（C-E-G），明亮而柔；波形随「声音风格」替换
+  win: { type: 'arp', wave: 'triangle', notes: [523.25, 659.25, 783.99], step: 0.10, noteDur: 0.5,
+    gain: 0.20, attack: 0.01, shimmer: [1046.5, 1318.5], shimmerDur: 0.4, shimmerGain: 0.04 },
+  // 失败：柔和下行「噗」——三角波 + 低通，不再用锯齿的刺耳下滑
+  fail: { type: 'tone', wave: 'triangle', f0: 294, f1: 147, dur: 0.42, gain: 0.18, attack: 0.006, filter: { type: 'lowpass', f0: 1100, f1: 400, q: 0.9 } },
+  // 盖章：低沉「咚」，棕噪低通（保留）
+  stamp: { type: 'noise', noise: 'brown', dur: 0.20, gain: 0.30, filter: { type: 'lowpass', f0: 800, f1: 160, q: 0.7 }, attack: 0.001 },
+  // 碰撞：闷响棕噪（保留，略降）
+  collide: { type: 'noise', noise: 'brown', dur: 0.12, gain: 0.17, filter: { type: 'lowpass', f0: 650, f1: 200, q: 0.9 }, attack: 0.001 },
+  // 界面点击：柔和木鱼「嗒」，三角短音（原 square → triangle，去掉刺耳方波）
+  ui: { type: 'tone', wave: 'triangle', f0: 520, f1: 520, dur: 0.05, gain: 0.09, attack: 0.002 },
+  // 关4 怕痒弹射小人：弹簧「boing」——正弦上扬 + 轻低通，听感是「被弹起来」而非「被砸」
+  spring: { type: 'tone', wave: 'sine', f0: 300, f1: 640, dur: 0.22, gain: 0.18, attack: 0.003, filter: { type: 'lowpass', f0: 2200, f1: 900, q: 0.9 } },
+  // 关5 落水：环境水声——带通白噪，中心频率慢扫 400→1200Hz（水面感）
+  water: { type: 'noise', noise: 'white', dur: 0.40, gain: 0.22, filter: { type: 'bandpass', f0: 400, f1: 1200, q: 1.0 }, attack: 0.03 },
 
   // ── 规格 3.1 核心表补齐（D29）：音量按「盖章 stamp=0dB」基准换算 ──────────────
-  // 抬笔 −16dB：同落笔一路但更短、更高频、更陡，避免和落笔听混
-  penup: { type: 'noise', noise: 'white', dur: 0.05, gain: 0.15, filter: { type: 'bandpass', f0: 3600, f1: 2200, q: 1.4 }, attack: 0.001 },
-  // 笔迹摩擦 −24dB：全表最轻，只作「笔还在纸上」的存在感，不做节奏。
-  // 规格给的 −24dB 折成幅度只有 0.022，手机小喇叭上基本听不见；这里取 0.030，
-  // **仍是全表最轻、且明显轻于 hint（0.054）**，绝对 dB 待真机标定（规格本就是 [待实]）。
-  penmove: { type: 'noise', noise: 'white', dur: 0.06, gain: 0.030, filter: { type: 'bandpass', f0: 3200, f1: 3900, q: 2.2 }, attack: 0.004 },
-  // 造物坠落 −8dB：低频正弦下滑 + 轻噪声尾。**不做滑稽下滑音**（规格 3.1 硬规则）
-  fall: { type: 'tone', wave: 'sine', f0: 240, f1: 90, dur: 0.44, gain: 0.135, attack: 0.006,
+  // 抬笔：同落笔一路但更短、更高频、更陡，避免和落笔听混
+  penup: { type: 'noise', noise: 'white', dur: 0.05, gain: 0.12, filter: { type: 'bandpass', f0: 3400, f1: 2200, q: 1.2 }, attack: 0.001 },
+  // 笔迹摩擦：全表最轻，只作「笔还在纸上」的存在感，不做节奏
+  penmove: { type: 'noise', noise: 'white', dur: 0.06, gain: 0.028, filter: { type: 'bandpass', f0: 3200, f1: 3900, q: 2.2 }, attack: 0.004 },
+  // 造物坠落：低频正弦下滑 + 轻噪声尾。**不做滑稽下滑音**
+  fall: { type: 'tone', wave: 'sine', f0: 240, f1: 90, dur: 0.44, gain: 0.14, attack: 0.006,
     filter: { type: 'lowpass', f0: 800, f1: 200, q: 0.8 },
-    overlay: { type: 'noise', noise: 'white', dur: 0.18, gain: 0.05, filter: { type: 'highpass', f0: 1200, f1: 600, q: 0.7 }, attack: 0.01 } },
-  // 章节/模式切换 −5dB：翻页噪声（高通上扫）+ 低频落地 thump（overlay）
-  chapter: { type: 'noise', noise: 'white', dur: 0.42, gain: 0.19, attack: 0.02,
+    overlay: { type: 'noise', noise: 'white', dur: 0.18, gain: 0.045, filter: { type: 'highpass', f0: 1200, f1: 600, q: 0.7 }, attack: 0.01 } },
+  // 章节/模式切换：翻页噪声（高通上扫）+ 低频落地 thump（overlay）
+  chapter: { type: 'noise', noise: 'white', dur: 0.42, gain: 0.17, attack: 0.02,
     filter: { type: 'highpass', f0: 600, f1: 2600, q: 0.7 },
-    overlay: { type: 'tone', wave: 'sine', f0: 150, f1: 70, dur: 0.30, gain: 0.16, attack: 0.004 } },
-  // 提示阶梯升级 −16dB：柔和 ping，音量刻意低（提示不该抢戏）
-  hint: { type: 'tone', wave: 'sine', f0: 880, f1: 880, dur: 0.50, gain: 0.054, attack: 0.02 },
-  // 文字气泡 −14dB：极短纸沙沙，decay 陡
-  bubble: { type: 'noise', noise: 'white', dur: 0.07, gain: 0.068, filter: { type: 'highpass', f0: 2000, f1: 4200, q: 0.8 }, attack: 0.002 },
-  // 能力组合奖励音 −2dB：全场唯一高亮度音色。纯四度+纯五度上行三音 + 高频 shimmer。
-  // 稀缺性就是奖励感——它必须在任何时刻都盖过碰撞音（3.4「sfx_combo 独占」）。
+    overlay: { type: 'tone', wave: 'sine', f0: 150, f1: 70, dur: 0.30, gain: 0.15, attack: 0.004 } },
+  // 提示阶梯升级：柔和 ping，音量刻意低（提示不该抢戏）
+  hint: { type: 'tone', wave: 'sine', f0: 880, f1: 880, dur: 0.50, gain: 0.05, attack: 0.02 },
+  // 文字气泡：极短纸沙沙，decay 陡
+  bubble: { type: 'noise', noise: 'white', dur: 0.07, gain: 0.06, filter: { type: 'highpass', f0: 2000, f1: 4200, q: 0.8 }, attack: 0.002 },
+  // 能力组合奖励音：全场唯一高亮度音色。纯四度+纯五度上行三音 + 高频 shimmer。
   combo: { type: 'arp', wave: 'triangle', notes: [392, 523.25, 587.33], step: 0.085, noteDur: 0.46,
-    gain: 0.26, attack: 0.008, shimmer: [2093, 2637, 3136], shimmerDur: 0.34, shimmerGain: 0.045 },
+    gain: 0.24, attack: 0.008, shimmer: [2093, 2637, 3136], shimmerDur: 0.34, shimmerGain: 0.045 },
+};
+
+/**
+ * 声音风格（用户可切换）。每条定义：
+ *   wave   —— 给所有「乐音类」音效（tone/arp）替换的波形（噪声类不受影响）
+ *   gain   —— 全局音量系数（叠在配方表基准增益之上）
+ *   bgm    —— 背景音乐的波形 / 增益 / 衰减时长
+ * 默认 warm；选择持久化到 localStorage('wcwz_sound_theme')。
+ */
+export const SOUND_THEMES = {
+  warm:     { label: '暖木',   wave: 'triangle', gain: 1.0,  bgm: { wave: 'triangle', gain: 1.0, decay: 0.9  } },
+  musicbox: { label: '八音盒', wave: 'sine',     gain: 0.95, bgm: { wave: 'sine',     gain: 1.0, decay: 0.42 } },
+  ocarina:  { label: '陶笛',   wave: 'sine',     gain: 1.0,  bgm: { wave: 'sine',     gain: 0.8, decay: 1.5  } },
 };
 
 const AUDIO_MODE_SCALES = {
@@ -99,6 +118,16 @@ export function createAudioBus() {
   let nodeCount = 0;
   const queue = [];             // 未解锁前的 pendown/spawn 排队
   const voiceState = { available: null, mode: 'unknown', unlockedVoice: false };
+
+  // ── 声音风格（用户可切换）──
+  let currentThemeId = 'warm';
+  let theme = SOUND_THEMES[currentThemeId];
+  try {
+    if (typeof localStorage !== 'undefined') {
+      const saved = localStorage.getItem('wcwz_sound_theme');
+      if (saved && SOUND_THEMES[saved]) { currentThemeId = saved; theme = SOUND_THEMES[saved]; }
+    }
+  } catch (e) { /* 隐私模式等场景 localStorage 不可用，退回默认 */ }
 
   /**
    * 语音调度（C.1 / C.1b / C.2）。真 backend 只在这里出现：
@@ -232,6 +261,22 @@ export function createAudioBus() {
    * 规格 3.1 要求它是「全场唯一高亮度音色」，所以走 sine/triangle 泛音少、
    * 高频 shimmer 加持；gain 上限已按 −2dB 换算，只低于盖章音。
    */
+  /**
+   * 把当前「声音风格」套到一条配方上：乐音类换波形 + 乘全局增益，噪声类只乘增益。
+   * 返回拷贝，绝不改写共享的 AUDIO_SFX_RECIPES（overlay 也单独套，避免污染原表）。
+   */
+  function applyTheme(r) {
+    if (!theme || !r) return r;
+    const out = Object.assign({}, r);
+    if (r.type === 'tone' || r.type === 'arp') {
+      if (theme.wave) out.wave = theme.wave;
+      out.gain = (r.gain || 0.2) * (theme.gain != null ? theme.gain : 1);
+    } else if (r.type === 'noise') {
+      out.gain = (r.gain || 0.2) * (theme.gain != null ? theme.gain : 1);
+    }
+    return out;
+  }
+
   function playArp(r, opts) {
     sfxLive++;
     const volScale = opts && opts.score != null ? Math.min(1.4, 0.5 + opts.score / 8) : 1;
@@ -262,14 +307,14 @@ export function createAudioBus() {
     const r = AUDIO_SFX_RECIPES[id];
     if (!r || !ctx || !enabled) return false;
     if (sfxLive >= AUDIO_MAX_SFX || nodeCount > AUDIO_NODE_BUDGET - 3) return false;
-    if (r.type === 'arp') return playArp(r, opts);
+    if (r.type === 'arp') return playArp(applyTheme(r), opts);
     const t0 = ctx.currentTime + 0.001;
     const volScale = opts && opts.score != null ? Math.min(1.4, 0.5 + opts.score / 8) : 1;
     sfxLive++;
-    startVoice(r, t0, volScale, () => { sfxLive = Math.max(0, sfxLive - 1); });
+    startVoice(applyTheme(r), t0, volScale, () => { sfxLive = Math.max(0, sfxLive - 1); });
     // 副声部（`overlay`）：与主声部同时起，给音效补「实体感 / 尾巴」，
     // 例如 chapter 的翻页噪声 + 低频落地、fall 的下滑音 + 噪声尾。
-    if (r.overlay) startVoice(r.overlay, t0 + (r.overlayDelay || 0), volScale, null);
+    if (r.overlay) startVoice(applyTheme(r.overlay), t0 + (r.overlayDelay || 0), volScale, null);
     return true;
   }
 
@@ -283,6 +328,7 @@ export function createAudioBus() {
   function scheduleBgm() {
     if (!ctx || !enabled || !bgmGain) return;
     const scale = AUDIO_MODE_SCALES[modeId] || AUDIO_MODE_SCALES[0];
+    const bgm = (theme && theme.bgm) || { wave: 'sine', gain: 1, decay: 0.9 };
     const now = ctx.currentTime;
     if (bgmNextNoteTime < now) bgmNextNoteTime = now + 0.05;   // 切回前台对齐，不补发
     while (bgmNextNoteTime < now + AUDIO_LOOKAHEAD_MS / 1000) {
@@ -292,11 +338,12 @@ export function createAudioBus() {
       const hz = rootHz * Math.pow(2, (deg + oct) / 12);
       const osc = ctx.createOscillator();
       const g = ctx.createGain();
-      osc.type = 'sine';
+      osc.type = bgm.wave || 'sine';
       osc.frequency.value = hz;
-      const dur = 0.9;
+      const dur = bgm.decay || 0.9;
+      const peak = 0.09 * (bgm.gain != null ? bgm.gain : 1);
       g.gain.setValueAtTime(0.0001, t);
-      g.gain.exponentialRampToValueAtTime(0.09, t + 0.18);
+      g.gain.exponentialRampToValueAtTime(Math.max(0.0002, peak), t + 0.18);
       g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
       osc.connect(g);
       g.connect(bgmGain);
@@ -412,6 +459,14 @@ export function createAudioBus() {
       if (Number.isFinite(m)) modeId = m | 0;
     },
 
+    /** 切换声音风格（用户选择）：warm / musicbox / ocarina，持久化到 localStorage */
+    setTheme(id) {
+      if (!SOUND_THEMES[id]) return;
+      currentThemeId = id;
+      theme = SOUND_THEMES[id];
+      try { if (typeof localStorage !== 'undefined') localStorage.setItem('wcwz_sound_theme', id); } catch (e) { /* 忽略 */ }
+    },
+
     /** P1：setVolume(bus, v) */
     setVolume(bus, v) {
       if (!ctx) return;
@@ -424,6 +479,7 @@ export function createAudioBus() {
 
     get unlocked() { return unlocked; },
     get unlockAt() { return unlockAt; },
+    get soundTheme() { return currentThemeId; },
     get voiceMode() { if (voiceState.available == null) probeVoices(); return voiceState.mode; },
     get state() { return ctx ? ctx.state : 'none'; },
     get nodeCount() { return nodeCount; },

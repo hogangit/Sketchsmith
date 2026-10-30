@@ -141,6 +141,13 @@ async function main() {
     } else {
       const aboutShot = await cdp.send('Page.captureScreenshot', { format: 'png' });
       fs.writeFileSync(path.join(ROOT, 'dist', 'smoke-about.png'), Buffer.from(aboutShot.data, 'base64'));
+      // 声音风格芯片：点第 2 枚（八音盒）→ 主题切换 + 持久化，且面板不关
+      await click(213, 565);
+      await sleep(200);
+      const th = JSON.parse(await evalJs(`JSON.stringify({about:__WCWZ__.view.about, t:__WCWZ__.view.soundTheme, ls:(typeof localStorage!=='undefined')?localStorage.getItem('wcwz_sound_theme'):null})`));
+      if (th.about !== true) failures.push('点声音风格芯片时面板被误关（应保持打开）');
+      if (th.t !== 'musicbox' || th.ls !== 'musicbox') failures.push(`声音风格切换/持久化失败（view=${th.t}, ls=${th.ls}）`);
+      else console.log('[smoke] 声音风格 → 点「八音盒」切换并持久化 OK（面板不关）');
       await click(215, 420);   // 卡片内部任意处
       await sleep(220);
       if (await evalJs('__WCWZ__.view.about === false') !== true) failures.push('「关于」浮层点击后未关闭');
@@ -239,6 +246,30 @@ async function main() {
       fs.writeFileSync(path.join(ROOT, 'dist', `smoke-l${c.level + 1}.png`), Buffer.from(shot.data, 'base64'));
       // 点一下继续（过关覆盖层）
       await evalJs('__WCWZ__.view.winAt=0; __WCWZ__.nextLevel(); 1');
+    }
+
+    // ── 回归：过关覆盖层上点「重来」必须留在本关，不得跳下一关（用户实测 bug）──
+    // 根因：view.win 为真时 handleUiTap 的 win 分支吞掉所有点击 → nextLevel()，
+    // 而头部「重来」按钮在覆盖层下半透明可见，点它等于点了「继续」。
+    {
+      await evalJs('__WCWZ__.view.levelIndex=1; __WCWZ__.retryLevel(); 1');   // 第 2 关
+      await sleep(200);
+      await evalJs(`(()=>{const pts=[];const[x1,y1,x2,y2]=[182,700,356,704];const n=60;for(let i=0;i<=n;i++){const t=i/n;pts.push({x:x1+(x2-x1)*t,y:y1+(y2-y1)*t});}__WCWZ__.spawnFromStrokes([{pts}]);return 1;})()`);
+      await evalJs(`__WCWZ__.runtime.setAbility('harden'); 1`);
+      let won = false;
+      for (let i = 0; i < 24; i++) { await sleep(250); if (await evalJs('__WCWZ__.view.win') === true) { won = true; break; } }
+      if (!won) {
+        failures.push('重来回归用例未能过关（进不了 win 覆盖层，用例失效）');
+      } else {
+        await sleep(700);   // 越过 winAt 的 600ms 保护窗
+        const idxBefore = await evalJs('__WCWZ__.view.levelIndex');
+        await click(357, 71);   // 头部「重来」按钮中心（x∈(334,380), y∈[52,92]）
+        await sleep(320);
+        const after = JSON.parse(await evalJs('JSON.stringify({idx:__WCWZ__.view.levelIndex, win:__WCWZ__.view.win})'));
+        if (after.idx !== idxBefore) failures.push(`过关后点「重来」跳关了：levelIndex ${idxBefore} → ${after.idx}（应保持不变）`);
+        else if (after.win !== false) failures.push('过关后点「重来」未清掉 win 覆盖层');
+        else console.log(`[smoke] 过关后点「重来」→ 留在第 ${idxBefore + 1} 关、覆盖层已清（未跳关）✔`);
+      }
     }
 
     // ── 沙盒「造物园」：真浏览器里也要能进、能画、不误判、能接回旧造物 ──

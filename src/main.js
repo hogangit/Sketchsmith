@@ -19,7 +19,7 @@ import {
   drawAmbient,
 } from './render/scenery.js';
 import { drawTitleCard } from './render/title-card.js';
-import { drawAbout } from './render/about.js';
+import { drawAbout, aboutThemeHit } from './render/about.js';
 import { chipIndexAt, drawHud, headerButtonAt, pickFailHint } from './render/hud.js';
 import { createStrokeCapture } from './stroke/capture.js';
 import { analyzeStrokeGroup } from './stroke/classify.js';
@@ -97,6 +97,7 @@ export function boot() {
     strokeCount: 0,
     audioOn: true,
     audioUnlocked: false,
+    soundTheme: AudioBus.soundTheme,   // 当前声音风格（暖木/八音盒/陶笛），「关于」面板里切换
     voiceMode: 'unknown',
     livePoints: 0,
     now: 0,
@@ -437,10 +438,26 @@ export function boot() {
 
   // ---- 输入 ----
   function handleUiTap(x, y) {
-    // 「关于」展开时任何点击都先关掉它——让玩家去瞄「知道了」是多余的一步
-    if (view.about) { view.about = false; AudioBus.play('ui'); return true; }
+    // 「关于」展开时：先判声音风格芯片（点中则换主题、不关面板），其余任意点关闭
+    if (view.about) {
+      const tr = aboutThemeHit(x, y);
+      if (tr) {
+        AudioBus.setTheme(tr);
+        view.soundTheme = AudioBus.soundTheme;
+        AudioBus.play('ability');   // 选完即时试听
+        return true;
+      }
+      view.about = false;
+      AudioBus.play('ui');
+      return true;
+    }
     if (view.win) {
       if (mainNow() - view.winAt < 600) return true;
+      // 过关覆盖层上头部按钮仍可见：先判它们，避免点「重来」被当成「继续」直接跳下一关（已修 bug）
+      const wb = headerButtonAt(x, y);
+      if (wb === 'retry') { AudioBus.play('ui'); retryLevel(); return true; }
+      if (wb === 'audio') { view.audioOn = !view.audioOn; AudioBus.setEnabled(view.audioOn); AudioBus.play('ui'); return true; }
+      if (wb === 'about') { view.about = true; AudioBus.play('ui'); return true; }
       if (view.levelIndex >= GAME_LEVELS.length - 1) { view.levelIndex = 0; buildWorld(); say(view.level.lines.intro, 3200); }
       else nextLevel();
       return true;

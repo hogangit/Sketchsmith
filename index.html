@@ -1650,6 +1650,693 @@ function drawTitleCard(ctx, opt) {
   ctx.restore();
 }
 ;
+/* src/audio/voice-scheduler.js */
+/**
+ * src/audio/voice-scheduler.js —— 语音排队与配额（`audio-spec-v2` 附录 **C.1 / C.1b / C.2**）
+ *
+ * 这个文件是**纯逻辑**：不碰 `speechSynthesis`、不碰 `AudioContext`、不读时钟（时钟注入）。
+ * 只有这样，C.1 那张"五步优先序"才能被单测逐条数出来——否则它只能靠读代码相信。
+ *
+ * ── C.1 五步（顺序写死，不许实现方自行调换）────────────────────────────────
+ *   ① C5 说话人不在画面内 → **挂起**（不扣、不丢），等 `onScreen` 变 true
+ *   ② 配额预检（**只读**）→ 不够就**不出队**，连 C4 的延后都别做
+ *   ③ C4 同音色 45s 间隔 → 未到就延后（不扣）
+ *   ④ 超时整句丢弃 → 丢弃（不扣）
+ *   ⑤ `utterance.onstart` → **扣 1 次；这是全程唯一允许扣费的地方**
+ *
+ * 为什么不能只在 ⑤ 检查额度：会出现"C4 已延后 30 秒 → 到点发现额度没了 → 丢弃"，
+ * 玩家白等 30 秒，这次延后完全是白做的。所以 ② 只读预检必须在入队前。
+ *
+ * ── C.1b 「抢占」与「终止」是两个动作 ─────────────────────────────────────
+ *   · `dropPending()`   只从**队列**里摘掉：**不扣费**，是优先手段；
+ *   · `abortSpeaking()` 对**已起播**的句子 cancel：**已扣不退**，只在语义过期时用。
+ *   合成一个 `cancel()` 会撞上场景边界（切关时上一关还在念 = 音画脱钩，会被当 bug 报）。
+ *
+ * ── C.2 两套额度不要混 ──────────────────────────────────────────────────────
+ *   本文件的 `budget` 是**语音额度**（整局 ≤30 条 / ≤75 s）；
+ *   主程序的 `sayCapped` 是**文字出现次数**。
+ *   两者共用 → 文字把语音额度吃光 → 症状是"字幕全出来了，却一句都没念"，
+ *   而排查看起来像语音坏了（会先去查 getVoices），方向全错。
+ */
+
+const VOICE_SPEAKER_INTERVAL_MS = 45000;   // C4 同音色强制间隔 [待实机标定]
+const VOICE_PENDING_TTL_MS = 45000;         // 挂起/延后的兜底上限（过窗判据优先用事件）[待实机标定]
+const VOICE_BUDGET_LINES = 30;              // 整局语音条数上限 [待实机标定]
+const VOICE_BUDGET_MS = 75000;              // 整局语音时长上限 [待实机标定]
+
+/**
+ * C.1b 级别：由**时机**决定，不由文案内容决定（否则会冒出"这句写得重要所以不给抢"）
+ * 数字越小优先级越高；≥INTRO 的可被抢占，SUCCESS/SCOPED 不可抢占。
+ */
+const LINE_LEVEL = {
+  SUCCESS: 1,        // 首次成功 / 章节盖章 / 终局
+  SCOPED: 2,         // 受逐句稀缺额度约束的句子（common_fail2、各关失败暗示）
+  INTRO: 3,          // 关卡开场
+  AMBIENT: 4,        // 隐藏解法 / 环境吐槽
+};
+const canPreempt = (lv) => lv >= LINE_LEVEL.INTRO;
+
+/**
+ * @param {object} o
+ * @param {{speak:(u:object)=>void, cancel:()=>void}} o.backend  语音后端（audio-bus 注入）
+ * @param {()=>number} o.now                                    时钟（ms）
+ * @param {(speaker:string)=>boolean} [o.isOnScreen]             C5 前置条件，由主程序提供
+ * @param {(lineId:string)=>boolean} [o.precheckQuota]           **只读**文字额度预检（C.1 第 2 步）
+ * @param {(lineId:string)=>void} [o.onSpoken]                   真正起播后的回调（诊断/打点）
+ * @param {(lineId:string, reason:string)=>void} [o.onAbort]      终止回调（诊断/打点）
+ */
+function createVoiceScheduler(o) {
+  const backend = o.backend;
+  const now = o.now || (() => Date.now());
+  const isOnScreen = o.isOnScreen || (() => true);
+  const precheckQuota = o.precheckQuota || (() => true);
+
+  let playing = null;              // { lineId, speaker, level, startedAt }
+  let pending = null;              // { lineId, speaker, level, textMs, enqueuedAt, notBefore, suspended }
+  const lastStartAt = new Map();   // speaker → 上次真正起播的时间（C4 用）
+  const budget = { lines: 0, ms: 0 };
+
+  function start(entry) {
+    playing = { lineId: entry.lineId, speaker: entry.speaker, level: entry.level, startedAt: now() };
+    const mine = playing;
+    backend.speak({
+      lineId: entry.lineId,
+      text: entry.text,
+      speaker: entry.speaker,
+      // ⑤ 全程唯一允许扣费的地方
+      onStart: () => {
+        budget.lines += 1;
+        budget.ms += Math.max(0, entry.textMs || 0);
+        lastStartAt.set(entry.speaker, now());
+        if (o.onSpoken) o.onSpoken(entry.lineId);
+      },
+      onEnd: () => { if (playing === mine) playing = null; },
+      onError: () => { if (playing === mine) playing = null; },
+    });
+  }
+
+  /**
+   * 推进一步：① C5 → ② 只读预检 → ③ C4 → ④ 超时 → ⑤ 起播
+   * 返回六态口径的结果（见文件头的 C.1c）：'started' | 'queued' | 'deferred' | 'blocked' | 'dropped'。
+   * **永远不会返回 'played'**：onstart 是异步的，同步说"已播"是假信息。
+   */
+  function pump() {
+    if (playing || !pending) return 'queued';       // 有句在播 → 排队等着
+    const t = now();
+    // ① C5：不在画面内 → 挂起（不扣、不丢）；过窗才作废，作废也不扣
+    if (!isOnScreen(pending.speaker)) {
+      pending.suspended = true;
+      if (t - pending.enqueuedAt > VOICE_PENDING_TTL_MS) { pending = null; return 'dropped'; }
+      return 'blocked';
+    }
+    pending.suspended = false;
+    // ② 配额只读预检：不够就直接不出队（连 C4 的延后都别做）
+    if (!precheckQuota(pending.lineId)) { pending = null; return 'dropped'; }
+    // ③ C4 同音色间隔：延后，不扣
+    const last = lastStartAt.get(pending.speaker);
+    const notBefore = Math.max(pending.notBefore || 0,
+      last == null ? 0 : last + VOICE_SPEAKER_INTERVAL_MS);
+    if (t < notBefore) { pending.notBefore = notBefore; return 'deferred'; }
+    // ④ 超时整句丢弃：不扣。
+    // 计时从"**它本来可以起播**"那一刻算起，不是从入队算起 —— 否则 TTL 与 C4 同为 45s 时，
+    // 被 C4 延后的句子会在刚够格的同一刻被判超时，C4 永远不可能成功。
+    const eligibleAt = Math.max(pending.enqueuedAt, pending.notBefore || 0);
+    if (t - eligibleAt > VOICE_PENDING_TTL_MS) { pending = null; return 'dropped'; }
+    // ⑤ 起播（扣费仍只在 backend 的 onStart 里发生）
+    const entry = pending;
+    pending = null;
+    start(entry);
+    return 'started';
+  }
+
+  const api = {
+    /**
+     * 请求播一句。返回 'started' | 'queued' | 'deferred' | 'blocked' | 'dropped'（C.1c 六态的前半段）。
+     * **不会返回 'played'**——真正起播另走 `onSpoken` 回调。
+     * **这里不扣费**——扣费只发生在 backend 的 onStart 回调里。
+     */
+    request({ lineId, text, speaker, level, textMs }) {
+      const lv = level || LINE_LEVEL.AMBIENT;
+      const make = () => ({ lineId, text, speaker, level: lv, textMs, enqueuedAt: now(), notBefore: 0, suspended: false });
+      if (!pending) { pending = make(); return pump(); }
+      // 队满：抢占**尚未起播的最低级别**（不扣费）
+      if (!canPreempt(lv)) return 'dropped';             // 不可抢占的句子不许挤掉别人
+      if (!canPreempt(pending.level)) return 'dropped';  // 正在等的不可抢占 → 只能拒新的
+      // 同级别不换（先到先等，避免同级来回颠簸）；只有"新的更重要"才抢占等待位
+      if (pending.level > lv) { pending = make(); return pump(); }
+      return 'dropped';                                  // 新的不比在等的更重要 → 拒
+    },
+
+    /** C.1b 抢占：只摘队列里尚未起播的，**不扣费** */
+    dropPending(lineId) {
+      if (pending && (!lineId || pending.lineId === lineId)) { pending = null; return true; }
+      return false;
+    },
+
+    /** C.1b 终止：已起播的句子停掉，**已扣不退**。只用于语义过期（切关 / 说话人离场 / 事件已过去） */
+    abortSpeaking(reason) {
+      if (!playing) return false;
+      const was = playing;
+      playing = null;
+      backend.cancel();                    // 全仓库唯一允许 cancel 的地方
+      if (o.onAbort) o.onAbort(was.lineId, reason);
+      return true;
+    },
+
+    /** 场景边界：切关 / 说话人离场 / 事件已过去 → 先抢占再终止（额度不退） */
+    onSceneBoundary(reason) {
+      api.dropPending();
+      return api.abortSpeaking(reason);
+    },
+
+    /** 由主循环或事件驱动：推进挂起与延后 */
+    tick() { pump(); },
+
+    /** 只读快照（给 HUD / 单测看，不许在这里改状态） */
+    get state() {
+      return {
+        playing: playing ? { ...playing } : null,
+        pending: pending ? { ...pending } : null,
+        budget: {
+          lines: budget.lines, ms: budget.ms,
+          linesLeft: Math.max(0, VOICE_BUDGET_LINES - budget.lines),
+          msLeft: Math.max(0, VOICE_BUDGET_MS - budget.ms),
+        },
+      };
+    },
+  };
+  return api;
+}
+;
+/* src/audio/audio-bus.js */
+/**
+ * src/audio/audio-bus.js —— 音频模块**单例**（全仓库唯一允许 new AudioContext 的文件）
+ *
+ * 对外只暴露 5 个方法（契约）：
+ *   unlockMedia()          唯一解锁点，幂等；必须在首次 pointerdown 的**同步**路径里调
+ *   play(sfxId, opts)      opts = { score?, material?, x? }（P0 忽略 x）
+ *   speak(lineId)          zh-* 语音可用才出声，否则返回 false → 上层走气泡
+ *   setEnabled(on)         总开关：suspend()/resume()，**不 stop()、不重建**
+ *   setKey(rootHz, modeId) 章节转调唯一入口，modeId 是数字（0=宫 1=羽）
+ *   setVolume(bus, v)      P1
+ *
+ * 硬约束（附录 C / E）：
+ *   · AudioContext 实例数 = 1，惰性创建；
+ *   · 节点总数 ≤40：BGM 常驻 ≤12，SFX 并发 ≤8；
+ *   · 每个 oscillator 包络结束必须 stop(t) + disconnect()，不许靠 GC；
+ *   · 噪声 buffer 只生成 2 个（白 1s / 棕 1s）全局复用；
+ *   · 未解锁前 play 排队 ≤3（只排 pendown/spawn），speak 直接丢弃；
+ *   · 绘制期间（pointerdown→pointerup）任何语音都不起播；
+ *   · 切后台停调度，切回来用 ctx.currentTime 对齐，不补发漏掉的音符。
+ *
+ * 本文件不 import 物理层：依赖方向是 audio → physics（订阅一次 onImpact 由 main.js 完成）。
+ */
+
+
+
+const AUDIO_MAX_SFX = 8;
+const AUDIO_NODE_BUDGET = 40;
+const AUDIO_QUEUE_MAX = 3;
+const AUDIO_QUEUE_TTL_MS = 1500;
+const AUDIO_LOOKAHEAD_MS = 120;
+const AUDIO_SCHED_INTERVAL_MS = 25;
+const AUDIO_BGM_GAIN = 0.16;
+
+/** 6 个 P0 音效配方（噪声源 | 振荡器 | 滤波 | 包络 | 时长），全部 [待实机标定] */
+const AUDIO_SFX_RECIPES = {
+  // 落笔：轻沙沙，短而柔（降增益、q 更柔，不再刺耳）
+  pendown: { type: 'noise', noise: 'white', dur: 0.09, gain: 0.22, filter: { type: 'bandpass', f0: 2400, f1: 1500, q: 0.8 }, attack: 0.003 },
+  // 生成造物：温润木琴「咚」——正弦下滑 + 轻低通，圆润不刺
+  spawn: { type: 'tone', wave: 'sine', f0: 392, f1: 262, dur: 0.30, gain: 0.22, attack: 0.006, filter: { type: 'lowpass', f0: 2200, f1: 900, q: 0.7 } },
+  // 贴能力：清亮「叮」，正弦上扬
+  ability: { type: 'tone', wave: 'sine', f0: 660, f1: 990, dur: 0.16, gain: 0.18, attack: 0.004 },
+  // 过关：上行小三和弦琶音（C-E-G），明亮而柔；波形随「声音风格」替换
+  win: { type: 'arp', wave: 'triangle', notes: [523.25, 659.25, 783.99], step: 0.10, noteDur: 0.5,
+    gain: 0.20, attack: 0.01, shimmer: [1046.5, 1318.5], shimmerDur: 0.4, shimmerGain: 0.04 },
+  // 失败：柔和下行「噗」——三角波 + 低通，不再用锯齿的刺耳下滑
+  fail: { type: 'tone', wave: 'triangle', f0: 294, f1: 147, dur: 0.42, gain: 0.18, attack: 0.006, filter: { type: 'lowpass', f0: 1100, f1: 400, q: 0.9 } },
+  // 盖章：低沉「咚」，棕噪低通（保留）
+  stamp: { type: 'noise', noise: 'brown', dur: 0.20, gain: 0.30, filter: { type: 'lowpass', f0: 800, f1: 160, q: 0.7 }, attack: 0.001 },
+  // 碰撞：闷响棕噪（保留，略降）
+  collide: { type: 'noise', noise: 'brown', dur: 0.12, gain: 0.17, filter: { type: 'lowpass', f0: 650, f1: 200, q: 0.9 }, attack: 0.001 },
+  // 界面点击：柔和木鱼「嗒」，三角短音（原 square → triangle，去掉刺耳方波）
+  ui: { type: 'tone', wave: 'triangle', f0: 520, f1: 520, dur: 0.05, gain: 0.09, attack: 0.002 },
+  // 关4 怕痒弹射小人：弹簧「boing」——正弦上扬 + 轻低通，听感是「被弹起来」而非「被砸」
+  spring: { type: 'tone', wave: 'sine', f0: 300, f1: 640, dur: 0.22, gain: 0.18, attack: 0.003, filter: { type: 'lowpass', f0: 2200, f1: 900, q: 0.9 } },
+  // 关5 落水：环境水声——带通白噪，中心频率慢扫 400→1200Hz（水面感）
+  water: { type: 'noise', noise: 'white', dur: 0.40, gain: 0.22, filter: { type: 'bandpass', f0: 400, f1: 1200, q: 1.0 }, attack: 0.03 },
+
+  // ── 规格 3.1 核心表补齐（D29）：音量按「盖章 stamp=0dB」基准换算 ──────────────
+  // 抬笔：同落笔一路但更短、更高频、更陡，避免和落笔听混
+  penup: { type: 'noise', noise: 'white', dur: 0.05, gain: 0.12, filter: { type: 'bandpass', f0: 3400, f1: 2200, q: 1.2 }, attack: 0.001 },
+  // 笔迹摩擦：全表最轻，只作「笔还在纸上」的存在感，不做节奏
+  penmove: { type: 'noise', noise: 'white', dur: 0.06, gain: 0.028, filter: { type: 'bandpass', f0: 3200, f1: 3900, q: 2.2 }, attack: 0.004 },
+  // 造物坠落：低频正弦下滑 + 轻噪声尾。**不做滑稽下滑音**
+  fall: { type: 'tone', wave: 'sine', f0: 240, f1: 90, dur: 0.44, gain: 0.14, attack: 0.006,
+    filter: { type: 'lowpass', f0: 800, f1: 200, q: 0.8 },
+    overlay: { type: 'noise', noise: 'white', dur: 0.18, gain: 0.045, filter: { type: 'highpass', f0: 1200, f1: 600, q: 0.7 }, attack: 0.01 } },
+  // 章节/模式切换：翻页噪声（高通上扫）+ 低频落地 thump（overlay）
+  chapter: { type: 'noise', noise: 'white', dur: 0.42, gain: 0.17, attack: 0.02,
+    filter: { type: 'highpass', f0: 600, f1: 2600, q: 0.7 },
+    overlay: { type: 'tone', wave: 'sine', f0: 150, f1: 70, dur: 0.30, gain: 0.15, attack: 0.004 } },
+  // 提示阶梯升级：柔和 ping，音量刻意低（提示不该抢戏）
+  hint: { type: 'tone', wave: 'sine', f0: 880, f1: 880, dur: 0.50, gain: 0.05, attack: 0.02 },
+  // 文字气泡：极短纸沙沙，decay 陡
+  bubble: { type: 'noise', noise: 'white', dur: 0.07, gain: 0.06, filter: { type: 'highpass', f0: 2000, f1: 4200, q: 0.8 }, attack: 0.002 },
+  // 能力组合奖励音：全场唯一高亮度音色。纯四度+纯五度上行三音 + 高频 shimmer。
+  combo: { type: 'arp', wave: 'triangle', notes: [392, 523.25, 587.33], step: 0.085, noteDur: 0.46,
+    gain: 0.24, attack: 0.008, shimmer: [2093, 2637, 3136], shimmerDur: 0.34, shimmerGain: 0.045 },
+};
+
+/**
+ * 声音风格（用户可切换）。每条定义：
+ *   wave   —— 给所有「乐音类」音效（tone/arp）替换的波形（噪声类不受影响）
+ *   gain   —— 全局音量系数（叠在配方表基准增益之上）
+ *   bgm    —— 背景音乐的波形 / 增益 / 衰减时长
+ * 默认 warm；选择持久化到 localStorage('wcwz_sound_theme')。
+ */
+const SOUND_THEMES = {
+  warm:     { label: '暖木',   wave: 'triangle', gain: 1.0,  bgm: { wave: 'triangle', gain: 1.0, decay: 0.9  } },
+  musicbox: { label: '八音盒', wave: 'sine',     gain: 0.95, bgm: { wave: 'sine',     gain: 1.0, decay: 0.42 } },
+  ocarina:  { label: '陶笛',   wave: 'sine',     gain: 1.0,  bgm: { wave: 'sine',     gain: 0.8, decay: 1.5  } },
+};
+
+const AUDIO_MODE_SCALES = {
+  0: [0, 2, 4, 7, 9],   // 宫（五声大调）
+  1: [0, 3, 5, 7, 10],  // 羽（五声小调）
+};
+
+function audioNow() {
+  return (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+}
+
+function createAudioBus() {
+  let ctx = null;
+  let masterGain = null;
+  let bgmGain = null;
+  let enabled = true;
+  let unlocked = false;
+  let unlockAt = 0;
+  let drawing = false;
+  let noiseWhite = null;
+  let noiseBrown = null;
+  let rootHz = 293.66;          // D
+  let modeId = 0;
+  let bgmTimer = 0;
+  let bgmNextNoteTime = 0;
+  let bgmStep = 0;
+  let sfxLive = 0;
+  let nodeCount = 0;
+  const queue = [];             // 未解锁前的 pendown/spawn 排队
+  const voiceState = { available: null, mode: 'unknown', unlockedVoice: false };
+
+  // ── 声音风格（用户可切换）──
+  let currentThemeId = 'warm';
+  let theme = SOUND_THEMES[currentThemeId];
+  try {
+    if (typeof localStorage !== 'undefined') {
+      const saved = localStorage.getItem('wcwz_sound_theme');
+      if (saved && SOUND_THEMES[saved]) { currentThemeId = saved; theme = SOUND_THEMES[saved]; }
+    }
+  } catch (e) { /* 隐私模式等场景 localStorage 不可用，退回默认 */ }
+
+  /**
+   * 语音调度（C.1 / C.1b / C.2）。真 backend 只在这里出现：
+   * `onstart` 回调是**全程唯一扣语音额度的地方**（C.1 第 ⑤ 步）。
+   * `isOnScreen` / `precheckQuota` 由主程序注入——音频层不认识关卡，也不该认识。
+   */
+  const voiceHooks = { isOnScreen: null, precheckQuota: null };
+  const voiceBackend = {
+    speak(req) {
+      try {
+        const u = new SpeechSynthesisUtterance(req.text || req.lineId);
+        u.lang = voiceState.voiceLang || 'zh-CN';
+        u.volume = 1;
+        u.rate = 0.98;
+        u.onstart = () => { if (req.onStart) req.onStart(); };
+        u.onend = () => { if (req.onEnd) req.onEnd(); };
+        u.onerror = () => { if (req.onError) req.onError(); };
+        speechSynthesis.speak(u);
+      } catch (e) { if (req.onError) req.onError(); }
+    },
+    cancel() { try { speechSynthesis.cancel(); } catch (e) { /* 忽略 */ } },
+  };
+  const voiceScheduler = createVoiceScheduler({
+    backend: voiceBackend,
+    now: audioNow,
+    isOnScreen: (sp) => (voiceHooks.isOnScreen ? voiceHooks.isOnScreen(sp) : true),
+    precheckQuota: (id) => (voiceHooks.precheckQuota ? voiceHooks.precheckQuota(id) : true),
+  });
+
+  // ---- 语音可用性判据：存在 zh-* 才算可用（只有 en-US 时必须走气泡）----
+  function probeVoices() {
+    if (typeof speechSynthesis === 'undefined') { voiceState.available = false; return false; }
+    let list = [];
+    try { list = speechSynthesis.getVoices() || []; } catch (e) { list = []; }
+    const zh = list.filter((v) => /^zh/i.test(v.lang || ''));
+    voiceState.available = zh.length > 0;
+    voiceState.mode = zh.length > 0 ? 'voice' : 'bubble';
+    if (zh.length) voiceState.voiceLang = zh[0].lang;
+    return voiceState.available;
+  }
+
+  function ensureCtx() {
+    if (ctx) return ctx;
+    const AC = typeof AudioContext !== 'undefined' ? AudioContext : (typeof webkitAudioContext !== 'undefined' ? webkitAudioContext : null);
+    if (!AC) return null;
+    try {
+      ctx = new AC();
+    } catch (e) {
+      ctx = null;
+      return null;
+    }
+    masterGain = ctx.createGain();
+    masterGain.gain.value = enabled ? 1 : 0;
+    masterGain.connect(ctx.destination);
+    bgmGain = ctx.createGain();
+    bgmGain.gain.value = AUDIO_BGM_GAIN;
+    bgmGain.connect(masterGain);
+    // 2 个噪声 buffer 全局复用
+    const sr = ctx.sampleRate;
+    noiseWhite = ctx.createBuffer(1, sr, sr);
+    const wd = noiseWhite.getChannelData(0);
+    for (let i = 0; i < wd.length; i++) wd[i] = Math.random() * 2 - 1;
+    noiseBrown = ctx.createBuffer(1, sr, sr);
+    const bd = noiseBrown.getChannelData(0);
+    let last = 0;
+    for (let i = 0; i < bd.length; i++) {
+      const white = Math.random() * 2 - 1;
+      last = (last + 0.02 * white) / 1.02;
+      bd[i] = last * 3.2;
+    }
+    probeVoices();
+    return ctx;
+  }
+
+  function track(delta) {
+    nodeCount = Math.max(0, nodeCount + delta);
+  }
+
+  /**
+   * 起一个「声部」：src → gain →（可选 filter）→ masterGain。
+   * `overlay`（副振荡器）与 `arp`（琶音的每一个音）都复用它——两者都是**通用机制**，
+   * 不是为某个音效 id 开的分支，所以配方表仍然保持纯数据。
+   * 滤波器由 setTimeout 独立回收（与 onended 不同路径），避免重复 track。
+   */
+  function startVoice(spec, t0, volScale, onEnded) {
+    const gain = ctx.createGain();
+    const vol = Math.max(0, Math.min(1, (spec.gain || 0.2) * (volScale == null ? 1 : volScale)));
+    gain.gain.setValueAtTime(0.0001, t0);
+    gain.gain.exponentialRampToValueAtTime(Math.max(0.0002, vol), t0 + (spec.attack || 0.003));
+    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + spec.dur);
+    if (spec.filter) {
+      const bq = ctx.createBiquadFilter();
+      bq.type = spec.filter.type || 'lowpass';
+      bq.frequency.setValueAtTime(spec.filter.f0, t0);
+      bq.frequency.exponentialRampToValueAtTime(Math.max(40, spec.filter.f1), t0 + spec.dur);
+      bq.Q.value = spec.filter.q || 1;
+      gain.connect(bq);
+      bq.connect(masterGain);
+      track(1);
+      setTimeout(() => { try { bq.disconnect(); track(-1); } catch (e) { /* noop */ } }, (spec.dur + 0.4) * 1000);
+    } else {
+      gain.connect(masterGain);
+    }
+    let src;
+    if (spec.type === 'noise') {
+      src = ctx.createBufferSource();
+      src.buffer = spec.noise === 'brown' ? noiseBrown : noiseWhite;
+      src.loop = false;
+      src.connect(gain);
+    } else {
+      src = ctx.createOscillator();
+      src.type = spec.wave || 'sine';
+      src.frequency.setValueAtTime(spec.f0, t0);
+      if (spec.f1 !== spec.f0) src.frequency.exponentialRampToValueAtTime(Math.max(30, spec.f1), t0 + spec.dur);
+      src.connect(gain);
+    }
+    track(2);                                   // gain + src
+    src.onended = () => {
+      try { src.disconnect(); } catch (e) { /* noop */ }
+      try { gain.disconnect(); } catch (e) { /* noop */ }
+      track(-2);
+      if (onEnded) onEnded();
+    };
+    if (src.start) src.start(t0);
+    if (src.stop) src.stop(t0 + spec.dur + 0.02);
+    return true;
+  }
+
+  /**
+   * 琶音型（目前只有 `combo` 用）：上行三音错位起播 + 高频 shimmer。
+   * 规格 3.1 要求它是「全场唯一高亮度音色」，所以走 sine/triangle 泛音少、
+   * 高频 shimmer 加持；gain 上限已按 −2dB 换算，只低于盖章音。
+   */
+  /**
+   * 把当前「声音风格」套到一条配方上：乐音类换波形 + 乘全局增益，噪声类只乘增益。
+   * 返回拷贝，绝不改写共享的 AUDIO_SFX_RECIPES（overlay 也单独套，避免污染原表）。
+   */
+  function applyTheme(r) {
+    if (!theme || !r) return r;
+    const out = Object.assign({}, r);
+    if (r.type === 'tone' || r.type === 'arp') {
+      if (theme.wave) out.wave = theme.wave;
+      out.gain = (r.gain || 0.2) * (theme.gain != null ? theme.gain : 1);
+    } else if (r.type === 'noise') {
+      out.gain = (r.gain || 0.2) * (theme.gain != null ? theme.gain : 1);
+    }
+    return out;
+  }
+
+  function playArp(r, opts) {
+    sfxLive++;
+    const volScale = opts && opts.score != null ? Math.min(1.4, 0.5 + opts.score / 8) : 1;
+    const t0 = ctx.currentTime + 0.001;
+    const step = r.step || 0.08;
+    const notes = r.notes || [];
+    let done = 0;
+    const total = notes.length + (r.shimmer ? r.shimmer.length : 0);
+    const oneDown = () => {
+      done++;
+      if (done >= total) sfxLive = Math.max(0, sfxLive - 1);
+    };
+    notes.forEach((f, i) => {
+      startVoice({ type: 'tone', wave: r.wave || 'triangle', f0: f, f1: f, dur: r.noteDur || 0.45,
+        gain: r.gain || 0.2, attack: r.attack || 0.008 }, t0 + i * step, volScale, oneDown);
+    });
+    if (r.shimmer) {
+      r.shimmer.forEach((f, i) => {
+        // 随机相位：不用固定起播点，避免三个泛音叠成一条死板的「和弦柱」
+        startVoice({ type: 'tone', wave: 'sine', f0: f, f1: f, dur: r.shimmerDur || 0.3,
+          gain: r.shimmerGain || 0.04, attack: 0.004 }, t0 + (r.shimmerDelay || 0.02) + i * 0.055, 1, oneDown);
+      });
+    }
+    return true;
+  }
+
+  function playRecipe(id, opts) {
+    const r = AUDIO_SFX_RECIPES[id];
+    if (!r || !ctx || !enabled) return false;
+    if (sfxLive >= AUDIO_MAX_SFX || nodeCount > AUDIO_NODE_BUDGET - 3) return false;
+    if (r.type === 'arp') return playArp(applyTheme(r), opts);
+    const t0 = ctx.currentTime + 0.001;
+    const volScale = opts && opts.score != null ? Math.min(1.4, 0.5 + opts.score / 8) : 1;
+    sfxLive++;
+    startVoice(applyTheme(r), t0, volScale, () => { sfxLive = Math.max(0, sfxLive - 1); });
+    // 副声部（`overlay`）：与主声部同时起，给音效补「实体感 / 尾巴」，
+    // 例如 chapter 的翻页噪声 + 低频落地、fall 的下滑音 + 噪声尾。
+    if (r.overlay) startVoice(applyTheme(r.overlay), t0 + (r.overlayDelay || 0), volScale, null);
+    return true;
+  }
+
+  function flushQueue() {
+    while (queue.length) {
+      const item = queue.shift();
+      if (audioNow() - item.at <= AUDIO_QUEUE_TTL_MS) playRecipe(item.id, item.opts);
+    }
+  }
+
+  function scheduleBgm() {
+    if (!ctx || !enabled || !bgmGain) return;
+    const scale = AUDIO_MODE_SCALES[modeId] || AUDIO_MODE_SCALES[0];
+    const bgm = (theme && theme.bgm) || { wave: 'sine', gain: 1, decay: 0.9 };
+    const now = ctx.currentTime;
+    if (bgmNextNoteTime < now) bgmNextNoteTime = now + 0.05;   // 切回前台对齐，不补发
+    while (bgmNextNoteTime < now + AUDIO_LOOKAHEAD_MS / 1000) {
+      const t = bgmNextNoteTime;
+      const deg = scale[bgmStep % scale.length];
+      const oct = bgmStep % 8 === 0 ? 12 : 0;
+      const hz = rootHz * Math.pow(2, (deg + oct) / 12);
+      const osc = ctx.createOscillator();
+      const g = ctx.createGain();
+      osc.type = bgm.wave || 'sine';
+      osc.frequency.value = hz;
+      const dur = bgm.decay || 0.9;
+      const peak = 0.09 * (bgm.gain != null ? bgm.gain : 1);
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(Math.max(0.0002, peak), t + 0.18);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+      osc.connect(g);
+      g.connect(bgmGain);
+      osc.start(t);
+      osc.stop(t + dur + 0.02);
+      osc.onended = () => { try { osc.disconnect(); g.disconnect(); } catch (e) { /* noop */ } };
+      bgmStep++;
+      bgmNextNoteTime += 0.62;
+    }
+  }
+
+  function startBgm() {
+    if (bgmTimer || !ctx) return;
+    bgmNextNoteTime = ctx.currentTime + 0.1;
+    bgmTimer = setInterval(scheduleBgm, AUDIO_SCHED_INTERVAL_MS);
+  }
+
+  const api = {
+    /** 契约：唯一解锁点。必须在首次 pointerdown 的同步路径里调一次。 */
+    unlockMedia() {
+      if (unlocked) return true;
+      const c = ensureCtx();
+      if (!c) return false;
+      unlocked = true;
+      unlockAt = audioNow();
+      // iOS：必须同时做 resume + 一次静音语音，缺一不可
+      try { c.resume && c.resume(); } catch (e) { /* iOS 可能拒绝，保持 suspended，下次手势再试 */ }
+      try {
+        if (typeof speechSynthesis !== 'undefined') {
+          const u = new SpeechSynthesisUtterance('');
+          u.volume = 0;
+          speechSynthesis.speak(u);
+        }
+      } catch (e) { /* 忽略 */ }
+      voiceState.unlockedVoice = true;
+      flushQueue();
+      startBgm();
+      return true;
+    },
+
+    /** 契约：play(sfxId, opts)。未解锁前只排 pendown/spawn，≤3 条，1.5s 过期。 */
+    play(sfxId, opts) {
+      if (!AUDIO_SFX_RECIPES[sfxId]) return false;
+      if (!unlocked) {
+        if (sfxId !== 'pendown' && sfxId !== 'spawn') return false;
+        if (queue.length >= AUDIO_QUEUE_MAX) return false;
+        queue.push({ id: sfxId, opts, at: audioNow() });
+        return false;
+      }
+      if (!enabled) return false;
+      return playRecipe(sfxId, opts);
+    },
+
+    /**
+     * 契约：speak(lineId, text, opts)。
+     * opts = { speaker?, level?, textMs?, onScreen?, precheck? }
+     *   · speaker   用于 C4 同音色 45s 间隔
+     *   · level     C.1b 级别（1 成功/盖章 2 受额度约束 3 开场 4 环境）
+     *   · onScreen  C5 前置条件，**由主程序提供**（不在画面内 → 挂起而不是丢弃）
+     *   · precheck  C.1 第 2 步的**只读**文字额度预检
+     *
+     * 出声与否由 voiceScheduler 按 C.1 的五步决定；这里只负责"把真 backend 接上去"。
+     * 返回值：true = 已起播（或已入队），false = 通道不可用/被拒（上层照常给气泡）。
+     */
+    speak(lineId, text, opts) {
+      const o2 = opts || {};
+      if (!lineId && !text) return false;
+      if (drawing) return false;                       // 绘制期间任何语音都不许起播（硬规则）
+      if (!unlocked) return false;                     // 不进队列：延迟台词比不播更糟
+      if (voiceState.available == null) probeVoices();
+      if (!voiceState.available) return false;         // 无中文语音 → 上层走气泡，绝不用英文念中文
+      if (typeof speechSynthesis === 'undefined') return false;
+      const res = voiceScheduler.request({
+        lineId: lineId || text,
+        text: text || lineId,
+        speaker: o2.speaker || 'narrator',
+        level: o2.level == null ? LINE_LEVEL.AMBIENT : o2.level,
+        textMs: o2.textMs,
+      });
+      return res !== 'rejected';
+    },
+
+    /** C.1b 抢占（尚未起播）：不扣额度 */
+    dropPendingLine(lineId) { return voiceScheduler.dropPending(lineId); },
+    /** C.1b 终止（已起播）：额度不退；只在语义过期时用 */
+    abortSpeaking(reason) { return voiceScheduler.abortSpeaking(reason); },
+    /** 场景边界（切关 / 说话人离场）：先抢占再终止 */
+    onSceneBoundary(reason) { return voiceScheduler.onSceneBoundary(reason); },
+    /** 主循环推进挂起/延后（每帧调一次即可，内部幂等） */
+    tickVoice() { voiceScheduler.tick(); },
+    /** 只读：语音额度与队列快照（诊断 / 单测） */
+    get voiceStateSnapshot() { return voiceScheduler.state; },
+    /** 主程序注入 C5 前置条件与 C.1 第 2 步的只读预检（音频层不认识关卡） */
+    setVoiceHooks(h) {
+      if (h && typeof h.isOnScreen === 'function') voiceHooks.isOnScreen = h.isOnScreen;
+      if (h && typeof h.precheckQuota === 'function') voiceHooks.precheckQuota = h.precheckQuota;
+    },
+
+    /** 契约：总开关。用 suspend/resume，保图，不重建。 */
+    setEnabled(on) {
+      enabled = !!on;
+      if (!ctx) return;
+      try {
+        if (enabled) { if (ctx.state === 'suspended' && unlocked) ctx.resume(); }
+        else ctx.suspend();
+      } catch (e) { /* iOS 可能拒绝，保持原状 */ }
+      if (masterGain) masterGain.gain.value = enabled ? 1 : 0;
+    },
+
+    /** 契约：章节转调唯一入口（换根音 + 重选音阶）。modeId 是数字：0=宫 1=羽 */
+    setKey(hz, m) {
+      rootHz = Number.isFinite(hz) ? hz : rootHz;
+      if (Number.isFinite(m)) modeId = m | 0;
+    },
+
+    /** 切换声音风格（用户选择）：warm / musicbox / ocarina，持久化到 localStorage */
+    setTheme(id) {
+      if (!SOUND_THEMES[id]) return;
+      currentThemeId = id;
+      theme = SOUND_THEMES[id];
+      try { if (typeof localStorage !== 'undefined') localStorage.setItem('wcwz_sound_theme', id); } catch (e) { /* 忽略 */ }
+    },
+
+    /** P1：setVolume(bus, v) */
+    setVolume(bus, v) {
+      if (!ctx) return;
+      const target = bus === 'bgm' ? bgmGain : masterGain;
+      if (target) target.gain.value = Math.max(0, Math.min(1, v));
+    },
+
+    /** 输入层告诉音频：正在绘制（语音静默） */
+    setDrawing(on) { drawing = !!on; },
+
+    get unlocked() { return unlocked; },
+    get unlockAt() { return unlockAt; },
+    get soundTheme() { return currentThemeId; },
+    get voiceMode() { if (voiceState.available == null) probeVoices(); return voiceState.mode; },
+    get state() { return ctx ? ctx.state : 'none'; },
+    get nodeCount() { return nodeCount; },
+    get sfxLive() { return sfxLive; },
+  };
+
+  // visibilitychange 由音频侧单独处理（其他模块不许碰 ctx.suspend/resume）
+  if (typeof document !== 'undefined' && document.addEventListener) {
+    document.addEventListener('visibilitychange', () => {
+      if (!ctx) return;
+      try {
+        if (document.hidden) { if (bgmTimer) { clearInterval(bgmTimer); bgmTimer = 0; } }
+        else if (enabled && unlocked) { ctx.resume(); bgmNextNoteTime = 0; startBgm(); }
+      } catch (e) { /* 忽略 */ }
+    });
+    if (typeof speechSynthesis !== 'undefined' && speechSynthesis.addEventListener) {
+      speechSynthesis.addEventListener('voiceschanged', probeVoices);
+    }
+  }
+
+  return api;
+}
+
+/** 单例：游戏层只拿这一个，禁止自行 new AudioContext */
+const AudioBus = createAudioBus();
+;
 /* src/render/about.js */
 /**
  * src/render/about.js —— 「关于 / 许可」浮层
@@ -1665,6 +2352,7 @@ function drawTitleCard(ctx, opt) {
  */
 
 
+
 const ABT_INK = '#38312a';
 const ABT_INK_MID = 'rgba(56,49,42,0.70)';
 const ABT_INK_SOFT = 'rgba(56,49,42,0.46)';
@@ -1673,10 +2361,30 @@ const ABT_UI = 'system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-ser
 const ABT_SERIF = '"Songti SC","Noto Serif SC","Source Han Serif SC",serif';
 
 /** 卡片几何（main.js 的命中判定与绘制共用，避免两处写死坐标对不上） */
-const ABOUT_CARD = { x: 40, y: 236, w: DESIGN_W - 80, h: 372 };
+const ABOUT_CARD = { x: 40, y: 236, w: DESIGN_W - 80, h: 420 };
 /** 「知道了」按钮 */
 function aboutCloseRect() {
   return { x: DESIGN_W / 2 - 54, y: ABOUT_CARD.y + ABOUT_CARD.h - 56, w: 108, h: 34 };
+}
+
+/**
+ * 「声音风格」选择芯片的几何（与绘制共用）。三档：暖木 / 八音盒 / 陶笛。
+ * main.js 在 view.about 为真时按这些矩形做命中判定，点中即换主题。
+ */
+function aboutThemeRects() {
+  const c = ABOUT_CARD;
+  const ids = Object.keys(SOUND_THEMES);
+  const w = 86, h = 34, gap = 10;
+  const x0 = c.x + 34;
+  const y0 = c.y + 312;
+  return ids.map((id, i) => ({ id, label: SOUND_THEMES[id].label, x: x0 + i * (w + gap), y: y0, w, h }));
+}
+/** 命中测试：点中某枚声音风格芯片则返回其 id，否则 null */
+function aboutThemeHit(x, y) {
+  for (const r of aboutThemeRects()) {
+    if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) return r.id;
+  }
+  return null;
 }
 
 function abtRoundRect(ctx, x, y, w, h, r) {
@@ -1770,6 +2478,28 @@ function drawAbout(ctx, view) {
   // tools/check-single-file.mjs 用非贪婪正则抓「第一个 licenses 块」，
   // 注释或文案里的字面量会先被匹配到，导致真正的许可块被跳过后误判「缺失或不完整」。
   ctx.fillText('id="licenses" 的纯文本块（看页面源码可见）。', x, y + 66);
+
+  // 声音风格：让用户挑选音色（默认暖木，可换八音盒 / 陶笛）
+  const ty = c.y + 300;
+  ctx.font = `11px ${ABT_UI}`;
+  ctx.fillStyle = ABT_INK_SOFT;
+  ctx.textAlign = 'left';
+  ctx.fillText('声音风格', x, ty);
+  const themeId = (view && view.soundTheme) || 'warm';
+  for (const r of aboutThemeRects()) {
+    const sel = r.id === themeId;
+    ctx.fillStyle = sel ? 'rgba(63,107,79,0.16)' : 'rgba(246,241,227,0.95)';
+    abtRoundRect(ctx, r.x, r.y, r.w, r.h, 8);
+    ctx.fill();
+    ctx.strokeStyle = sel ? 'rgba(63,107,79,0.75)' : 'rgba(90,80,64,0.55)';
+    ctx.lineWidth = 1.3;
+    ctx.stroke();
+    ctx.fillStyle = sel ? '#3f6b4f' : '#3a352c';
+    ctx.font = `600 13px ${ABT_UI}`;
+    ctx.textAlign = 'center';
+    ctx.fillText(r.label, r.x + r.w / 2, r.y + 22);
+  }
+  ctx.textAlign = 'left';
 
   // 「知道了」按钮
   const btn = aboutCloseRect();
@@ -4366,637 +5096,6 @@ function createLevelRuntime(opts) {
   };
 }
 ;
-/* src/audio/voice-scheduler.js */
-/**
- * src/audio/voice-scheduler.js —— 语音排队与配额（`audio-spec-v2` 附录 **C.1 / C.1b / C.2**）
- *
- * 这个文件是**纯逻辑**：不碰 `speechSynthesis`、不碰 `AudioContext`、不读时钟（时钟注入）。
- * 只有这样，C.1 那张"五步优先序"才能被单测逐条数出来——否则它只能靠读代码相信。
- *
- * ── C.1 五步（顺序写死，不许实现方自行调换）────────────────────────────────
- *   ① C5 说话人不在画面内 → **挂起**（不扣、不丢），等 `onScreen` 变 true
- *   ② 配额预检（**只读**）→ 不够就**不出队**，连 C4 的延后都别做
- *   ③ C4 同音色 45s 间隔 → 未到就延后（不扣）
- *   ④ 超时整句丢弃 → 丢弃（不扣）
- *   ⑤ `utterance.onstart` → **扣 1 次；这是全程唯一允许扣费的地方**
- *
- * 为什么不能只在 ⑤ 检查额度：会出现"C4 已延后 30 秒 → 到点发现额度没了 → 丢弃"，
- * 玩家白等 30 秒，这次延后完全是白做的。所以 ② 只读预检必须在入队前。
- *
- * ── C.1b 「抢占」与「终止」是两个动作 ─────────────────────────────────────
- *   · `dropPending()`   只从**队列**里摘掉：**不扣费**，是优先手段；
- *   · `abortSpeaking()` 对**已起播**的句子 cancel：**已扣不退**，只在语义过期时用。
- *   合成一个 `cancel()` 会撞上场景边界（切关时上一关还在念 = 音画脱钩，会被当 bug 报）。
- *
- * ── C.2 两套额度不要混 ──────────────────────────────────────────────────────
- *   本文件的 `budget` 是**语音额度**（整局 ≤30 条 / ≤75 s）；
- *   主程序的 `sayCapped` 是**文字出现次数**。
- *   两者共用 → 文字把语音额度吃光 → 症状是"字幕全出来了，却一句都没念"，
- *   而排查看起来像语音坏了（会先去查 getVoices），方向全错。
- */
-
-const VOICE_SPEAKER_INTERVAL_MS = 45000;   // C4 同音色强制间隔 [待实机标定]
-const VOICE_PENDING_TTL_MS = 45000;         // 挂起/延后的兜底上限（过窗判据优先用事件）[待实机标定]
-const VOICE_BUDGET_LINES = 30;              // 整局语音条数上限 [待实机标定]
-const VOICE_BUDGET_MS = 75000;              // 整局语音时长上限 [待实机标定]
-
-/**
- * C.1b 级别：由**时机**决定，不由文案内容决定（否则会冒出"这句写得重要所以不给抢"）
- * 数字越小优先级越高；≥INTRO 的可被抢占，SUCCESS/SCOPED 不可抢占。
- */
-const LINE_LEVEL = {
-  SUCCESS: 1,        // 首次成功 / 章节盖章 / 终局
-  SCOPED: 2,         // 受逐句稀缺额度约束的句子（common_fail2、各关失败暗示）
-  INTRO: 3,          // 关卡开场
-  AMBIENT: 4,        // 隐藏解法 / 环境吐槽
-};
-const canPreempt = (lv) => lv >= LINE_LEVEL.INTRO;
-
-/**
- * @param {object} o
- * @param {{speak:(u:object)=>void, cancel:()=>void}} o.backend  语音后端（audio-bus 注入）
- * @param {()=>number} o.now                                    时钟（ms）
- * @param {(speaker:string)=>boolean} [o.isOnScreen]             C5 前置条件，由主程序提供
- * @param {(lineId:string)=>boolean} [o.precheckQuota]           **只读**文字额度预检（C.1 第 2 步）
- * @param {(lineId:string)=>void} [o.onSpoken]                   真正起播后的回调（诊断/打点）
- * @param {(lineId:string, reason:string)=>void} [o.onAbort]      终止回调（诊断/打点）
- */
-function createVoiceScheduler(o) {
-  const backend = o.backend;
-  const now = o.now || (() => Date.now());
-  const isOnScreen = o.isOnScreen || (() => true);
-  const precheckQuota = o.precheckQuota || (() => true);
-
-  let playing = null;              // { lineId, speaker, level, startedAt }
-  let pending = null;              // { lineId, speaker, level, textMs, enqueuedAt, notBefore, suspended }
-  const lastStartAt = new Map();   // speaker → 上次真正起播的时间（C4 用）
-  const budget = { lines: 0, ms: 0 };
-
-  function start(entry) {
-    playing = { lineId: entry.lineId, speaker: entry.speaker, level: entry.level, startedAt: now() };
-    const mine = playing;
-    backend.speak({
-      lineId: entry.lineId,
-      text: entry.text,
-      speaker: entry.speaker,
-      // ⑤ 全程唯一允许扣费的地方
-      onStart: () => {
-        budget.lines += 1;
-        budget.ms += Math.max(0, entry.textMs || 0);
-        lastStartAt.set(entry.speaker, now());
-        if (o.onSpoken) o.onSpoken(entry.lineId);
-      },
-      onEnd: () => { if (playing === mine) playing = null; },
-      onError: () => { if (playing === mine) playing = null; },
-    });
-  }
-
-  /**
-   * 推进一步：① C5 → ② 只读预检 → ③ C4 → ④ 超时 → ⑤ 起播
-   * 返回六态口径的结果（见文件头的 C.1c）：'started' | 'queued' | 'deferred' | 'blocked' | 'dropped'。
-   * **永远不会返回 'played'**：onstart 是异步的，同步说"已播"是假信息。
-   */
-  function pump() {
-    if (playing || !pending) return 'queued';       // 有句在播 → 排队等着
-    const t = now();
-    // ① C5：不在画面内 → 挂起（不扣、不丢）；过窗才作废，作废也不扣
-    if (!isOnScreen(pending.speaker)) {
-      pending.suspended = true;
-      if (t - pending.enqueuedAt > VOICE_PENDING_TTL_MS) { pending = null; return 'dropped'; }
-      return 'blocked';
-    }
-    pending.suspended = false;
-    // ② 配额只读预检：不够就直接不出队（连 C4 的延后都别做）
-    if (!precheckQuota(pending.lineId)) { pending = null; return 'dropped'; }
-    // ③ C4 同音色间隔：延后，不扣
-    const last = lastStartAt.get(pending.speaker);
-    const notBefore = Math.max(pending.notBefore || 0,
-      last == null ? 0 : last + VOICE_SPEAKER_INTERVAL_MS);
-    if (t < notBefore) { pending.notBefore = notBefore; return 'deferred'; }
-    // ④ 超时整句丢弃：不扣。
-    // 计时从"**它本来可以起播**"那一刻算起，不是从入队算起 —— 否则 TTL 与 C4 同为 45s 时，
-    // 被 C4 延后的句子会在刚够格的同一刻被判超时，C4 永远不可能成功。
-    const eligibleAt = Math.max(pending.enqueuedAt, pending.notBefore || 0);
-    if (t - eligibleAt > VOICE_PENDING_TTL_MS) { pending = null; return 'dropped'; }
-    // ⑤ 起播（扣费仍只在 backend 的 onStart 里发生）
-    const entry = pending;
-    pending = null;
-    start(entry);
-    return 'started';
-  }
-
-  const api = {
-    /**
-     * 请求播一句。返回 'started' | 'queued' | 'deferred' | 'blocked' | 'dropped'（C.1c 六态的前半段）。
-     * **不会返回 'played'**——真正起播另走 `onSpoken` 回调。
-     * **这里不扣费**——扣费只发生在 backend 的 onStart 回调里。
-     */
-    request({ lineId, text, speaker, level, textMs }) {
-      const lv = level || LINE_LEVEL.AMBIENT;
-      const make = () => ({ lineId, text, speaker, level: lv, textMs, enqueuedAt: now(), notBefore: 0, suspended: false });
-      if (!pending) { pending = make(); return pump(); }
-      // 队满：抢占**尚未起播的最低级别**（不扣费）
-      if (!canPreempt(lv)) return 'dropped';             // 不可抢占的句子不许挤掉别人
-      if (!canPreempt(pending.level)) return 'dropped';  // 正在等的不可抢占 → 只能拒新的
-      // 同级别不换（先到先等，避免同级来回颠簸）；只有"新的更重要"才抢占等待位
-      if (pending.level > lv) { pending = make(); return pump(); }
-      return 'dropped';                                  // 新的不比在等的更重要 → 拒
-    },
-
-    /** C.1b 抢占：只摘队列里尚未起播的，**不扣费** */
-    dropPending(lineId) {
-      if (pending && (!lineId || pending.lineId === lineId)) { pending = null; return true; }
-      return false;
-    },
-
-    /** C.1b 终止：已起播的句子停掉，**已扣不退**。只用于语义过期（切关 / 说话人离场 / 事件已过去） */
-    abortSpeaking(reason) {
-      if (!playing) return false;
-      const was = playing;
-      playing = null;
-      backend.cancel();                    // 全仓库唯一允许 cancel 的地方
-      if (o.onAbort) o.onAbort(was.lineId, reason);
-      return true;
-    },
-
-    /** 场景边界：切关 / 说话人离场 / 事件已过去 → 先抢占再终止（额度不退） */
-    onSceneBoundary(reason) {
-      api.dropPending();
-      return api.abortSpeaking(reason);
-    },
-
-    /** 由主循环或事件驱动：推进挂起与延后 */
-    tick() { pump(); },
-
-    /** 只读快照（给 HUD / 单测看，不许在这里改状态） */
-    get state() {
-      return {
-        playing: playing ? { ...playing } : null,
-        pending: pending ? { ...pending } : null,
-        budget: {
-          lines: budget.lines, ms: budget.ms,
-          linesLeft: Math.max(0, VOICE_BUDGET_LINES - budget.lines),
-          msLeft: Math.max(0, VOICE_BUDGET_MS - budget.ms),
-        },
-      };
-    },
-  };
-  return api;
-}
-;
-/* src/audio/audio-bus.js */
-/**
- * src/audio/audio-bus.js —— 音频模块**单例**（全仓库唯一允许 new AudioContext 的文件）
- *
- * 对外只暴露 5 个方法（契约）：
- *   unlockMedia()          唯一解锁点，幂等；必须在首次 pointerdown 的**同步**路径里调
- *   play(sfxId, opts)      opts = { score?, material?, x? }（P0 忽略 x）
- *   speak(lineId)          zh-* 语音可用才出声，否则返回 false → 上层走气泡
- *   setEnabled(on)         总开关：suspend()/resume()，**不 stop()、不重建**
- *   setKey(rootHz, modeId) 章节转调唯一入口，modeId 是数字（0=宫 1=羽）
- *   setVolume(bus, v)      P1
- *
- * 硬约束（附录 C / E）：
- *   · AudioContext 实例数 = 1，惰性创建；
- *   · 节点总数 ≤40：BGM 常驻 ≤12，SFX 并发 ≤8；
- *   · 每个 oscillator 包络结束必须 stop(t) + disconnect()，不许靠 GC；
- *   · 噪声 buffer 只生成 2 个（白 1s / 棕 1s）全局复用；
- *   · 未解锁前 play 排队 ≤3（只排 pendown/spawn），speak 直接丢弃；
- *   · 绘制期间（pointerdown→pointerup）任何语音都不起播；
- *   · 切后台停调度，切回来用 ctx.currentTime 对齐，不补发漏掉的音符。
- *
- * 本文件不 import 物理层：依赖方向是 audio → physics（订阅一次 onImpact 由 main.js 完成）。
- */
-
-
-
-const AUDIO_MAX_SFX = 8;
-const AUDIO_NODE_BUDGET = 40;
-const AUDIO_QUEUE_MAX = 3;
-const AUDIO_QUEUE_TTL_MS = 1500;
-const AUDIO_LOOKAHEAD_MS = 120;
-const AUDIO_SCHED_INTERVAL_MS = 25;
-const AUDIO_BGM_GAIN = 0.16;
-
-/** 6 个 P0 音效配方（噪声源 | 振荡器 | 滤波 | 包络 | 时长），全部 [待实机标定] */
-const AUDIO_SFX_RECIPES = {
-  pendown: { type: 'noise', noise: 'white', dur: 0.09, gain: 0.30, filter: { type: 'bandpass', f0: 2600, f1: 1400, q: 1.1 }, attack: 0.002 },
-  spawn: { type: 'tone', wave: 'triangle', f0: 220, f1: 132, dur: 0.34, gain: 0.24, attack: 0.006, filter: { type: 'lowpass', f0: 1800, f1: 500, q: 0.8 } },
-  ability: { type: 'tone', wave: 'sine', f0: 660, f1: 990, dur: 0.18, gain: 0.18, attack: 0.004 },
-  win: { type: 'tone', wave: 'triangle', f0: 523.25, f1: 783.99, dur: 0.55, gain: 0.22, attack: 0.008 },
-  fail: { type: 'tone', wave: 'sawtooth', f0: 196, f1: 98, dur: 0.40, gain: 0.16, attack: 0.004, filter: { type: 'lowpass', f0: 900, f1: 300, q: 1.2 } },
-  stamp: { type: 'noise', noise: 'brown', dur: 0.20, gain: 0.34, filter: { type: 'lowpass', f0: 900, f1: 180, q: 0.7 }, attack: 0.001 },
-  collide: { type: 'noise', noise: 'brown', dur: 0.12, gain: 0.20, filter: { type: 'lowpass', f0: 700, f1: 200, q: 0.9 }, attack: 0.001 },
-  ui: { type: 'tone', wave: 'square', f0: 440, f1: 440, dur: 0.05, gain: 0.10, attack: 0.002 },
-  // 关4 怕痒弹射小人：弹簧「boing」——快速上扫正弦 + 轻噪声尾，听感是「被弹起来」而非「被砸」
-  spring: { type: 'tone', wave: 'sine', f0: 300, f1: 640, dur: 0.22, gain: 0.20, attack: 0.003, filter: { type: 'lowpass', f0: 2200, f1: 900, q: 0.9 } },
-  // 关5 落水：环境水声——带通白噪，中心频率慢扫 400→1200Hz（水面感），[audio-spec 附录B sfx_water]
-  water: { type: 'noise', noise: 'white', dur: 0.40, gain: 0.26, filter: { type: 'bandpass', f0: 400, f1: 1200, q: 1.0 }, attack: 0.03 },
-
-  // ── 规格 3.1 核心表补齐（D29）：音量按「盖章 stamp=0dB」基准换算 ──────────────
-  // 抬笔 −16dB：同落笔一路但更短、更高频、更陡，避免和落笔听混
-  penup: { type: 'noise', noise: 'white', dur: 0.05, gain: 0.15, filter: { type: 'bandpass', f0: 3600, f1: 2200, q: 1.4 }, attack: 0.001 },
-  // 笔迹摩擦 −24dB：全表最轻，只作「笔还在纸上」的存在感，不做节奏。
-  // 规格给的 −24dB 折成幅度只有 0.022，手机小喇叭上基本听不见；这里取 0.030，
-  // **仍是全表最轻、且明显轻于 hint（0.054）**，绝对 dB 待真机标定（规格本就是 [待实]）。
-  penmove: { type: 'noise', noise: 'white', dur: 0.06, gain: 0.030, filter: { type: 'bandpass', f0: 3200, f1: 3900, q: 2.2 }, attack: 0.004 },
-  // 造物坠落 −8dB：低频正弦下滑 + 轻噪声尾。**不做滑稽下滑音**（规格 3.1 硬规则）
-  fall: { type: 'tone', wave: 'sine', f0: 240, f1: 90, dur: 0.44, gain: 0.135, attack: 0.006,
-    filter: { type: 'lowpass', f0: 800, f1: 200, q: 0.8 },
-    overlay: { type: 'noise', noise: 'white', dur: 0.18, gain: 0.05, filter: { type: 'highpass', f0: 1200, f1: 600, q: 0.7 }, attack: 0.01 } },
-  // 章节/模式切换 −5dB：翻页噪声（高通上扫）+ 低频落地 thump（overlay）
-  chapter: { type: 'noise', noise: 'white', dur: 0.42, gain: 0.19, attack: 0.02,
-    filter: { type: 'highpass', f0: 600, f1: 2600, q: 0.7 },
-    overlay: { type: 'tone', wave: 'sine', f0: 150, f1: 70, dur: 0.30, gain: 0.16, attack: 0.004 } },
-  // 提示阶梯升级 −16dB：柔和 ping，音量刻意低（提示不该抢戏）
-  hint: { type: 'tone', wave: 'sine', f0: 880, f1: 880, dur: 0.50, gain: 0.054, attack: 0.02 },
-  // 文字气泡 −14dB：极短纸沙沙，decay 陡
-  bubble: { type: 'noise', noise: 'white', dur: 0.07, gain: 0.068, filter: { type: 'highpass', f0: 2000, f1: 4200, q: 0.8 }, attack: 0.002 },
-  // 能力组合奖励音 −2dB：全场唯一高亮度音色。纯四度+纯五度上行三音 + 高频 shimmer。
-  // 稀缺性就是奖励感——它必须在任何时刻都盖过碰撞音（3.4「sfx_combo 独占」）。
-  combo: { type: 'arp', wave: 'triangle', notes: [392, 523.25, 587.33], step: 0.085, noteDur: 0.46,
-    gain: 0.26, attack: 0.008, shimmer: [2093, 2637, 3136], shimmerDur: 0.34, shimmerGain: 0.045 },
-};
-
-const AUDIO_MODE_SCALES = {
-  0: [0, 2, 4, 7, 9],   // 宫（五声大调）
-  1: [0, 3, 5, 7, 10],  // 羽（五声小调）
-};
-
-function audioNow() {
-  return (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
-}
-
-function createAudioBus() {
-  let ctx = null;
-  let masterGain = null;
-  let bgmGain = null;
-  let enabled = true;
-  let unlocked = false;
-  let unlockAt = 0;
-  let drawing = false;
-  let noiseWhite = null;
-  let noiseBrown = null;
-  let rootHz = 293.66;          // D
-  let modeId = 0;
-  let bgmTimer = 0;
-  let bgmNextNoteTime = 0;
-  let bgmStep = 0;
-  let sfxLive = 0;
-  let nodeCount = 0;
-  const queue = [];             // 未解锁前的 pendown/spawn 排队
-  const voiceState = { available: null, mode: 'unknown', unlockedVoice: false };
-
-  /**
-   * 语音调度（C.1 / C.1b / C.2）。真 backend 只在这里出现：
-   * `onstart` 回调是**全程唯一扣语音额度的地方**（C.1 第 ⑤ 步）。
-   * `isOnScreen` / `precheckQuota` 由主程序注入——音频层不认识关卡，也不该认识。
-   */
-  const voiceHooks = { isOnScreen: null, precheckQuota: null };
-  const voiceBackend = {
-    speak(req) {
-      try {
-        const u = new SpeechSynthesisUtterance(req.text || req.lineId);
-        u.lang = voiceState.voiceLang || 'zh-CN';
-        u.volume = 1;
-        u.rate = 0.98;
-        u.onstart = () => { if (req.onStart) req.onStart(); };
-        u.onend = () => { if (req.onEnd) req.onEnd(); };
-        u.onerror = () => { if (req.onError) req.onError(); };
-        speechSynthesis.speak(u);
-      } catch (e) { if (req.onError) req.onError(); }
-    },
-    cancel() { try { speechSynthesis.cancel(); } catch (e) { /* 忽略 */ } },
-  };
-  const voiceScheduler = createVoiceScheduler({
-    backend: voiceBackend,
-    now: audioNow,
-    isOnScreen: (sp) => (voiceHooks.isOnScreen ? voiceHooks.isOnScreen(sp) : true),
-    precheckQuota: (id) => (voiceHooks.precheckQuota ? voiceHooks.precheckQuota(id) : true),
-  });
-
-  // ---- 语音可用性判据：存在 zh-* 才算可用（只有 en-US 时必须走气泡）----
-  function probeVoices() {
-    if (typeof speechSynthesis === 'undefined') { voiceState.available = false; return false; }
-    let list = [];
-    try { list = speechSynthesis.getVoices() || []; } catch (e) { list = []; }
-    const zh = list.filter((v) => /^zh/i.test(v.lang || ''));
-    voiceState.available = zh.length > 0;
-    voiceState.mode = zh.length > 0 ? 'voice' : 'bubble';
-    if (zh.length) voiceState.voiceLang = zh[0].lang;
-    return voiceState.available;
-  }
-
-  function ensureCtx() {
-    if (ctx) return ctx;
-    const AC = typeof AudioContext !== 'undefined' ? AudioContext : (typeof webkitAudioContext !== 'undefined' ? webkitAudioContext : null);
-    if (!AC) return null;
-    try {
-      ctx = new AC();
-    } catch (e) {
-      ctx = null;
-      return null;
-    }
-    masterGain = ctx.createGain();
-    masterGain.gain.value = enabled ? 1 : 0;
-    masterGain.connect(ctx.destination);
-    bgmGain = ctx.createGain();
-    bgmGain.gain.value = AUDIO_BGM_GAIN;
-    bgmGain.connect(masterGain);
-    // 2 个噪声 buffer 全局复用
-    const sr = ctx.sampleRate;
-    noiseWhite = ctx.createBuffer(1, sr, sr);
-    const wd = noiseWhite.getChannelData(0);
-    for (let i = 0; i < wd.length; i++) wd[i] = Math.random() * 2 - 1;
-    noiseBrown = ctx.createBuffer(1, sr, sr);
-    const bd = noiseBrown.getChannelData(0);
-    let last = 0;
-    for (let i = 0; i < bd.length; i++) {
-      const white = Math.random() * 2 - 1;
-      last = (last + 0.02 * white) / 1.02;
-      bd[i] = last * 3.2;
-    }
-    probeVoices();
-    return ctx;
-  }
-
-  function track(delta) {
-    nodeCount = Math.max(0, nodeCount + delta);
-  }
-
-  /**
-   * 起一个「声部」：src → gain →（可选 filter）→ masterGain。
-   * `overlay`（副振荡器）与 `arp`（琶音的每一个音）都复用它——两者都是**通用机制**，
-   * 不是为某个音效 id 开的分支，所以配方表仍然保持纯数据。
-   * 滤波器由 setTimeout 独立回收（与 onended 不同路径），避免重复 track。
-   */
-  function startVoice(spec, t0, volScale, onEnded) {
-    const gain = ctx.createGain();
-    const vol = Math.max(0, Math.min(1, (spec.gain || 0.2) * (volScale == null ? 1 : volScale)));
-    gain.gain.setValueAtTime(0.0001, t0);
-    gain.gain.exponentialRampToValueAtTime(Math.max(0.0002, vol), t0 + (spec.attack || 0.003));
-    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + spec.dur);
-    if (spec.filter) {
-      const bq = ctx.createBiquadFilter();
-      bq.type = spec.filter.type || 'lowpass';
-      bq.frequency.setValueAtTime(spec.filter.f0, t0);
-      bq.frequency.exponentialRampToValueAtTime(Math.max(40, spec.filter.f1), t0 + spec.dur);
-      bq.Q.value = spec.filter.q || 1;
-      gain.connect(bq);
-      bq.connect(masterGain);
-      track(1);
-      setTimeout(() => { try { bq.disconnect(); track(-1); } catch (e) { /* noop */ } }, (spec.dur + 0.4) * 1000);
-    } else {
-      gain.connect(masterGain);
-    }
-    let src;
-    if (spec.type === 'noise') {
-      src = ctx.createBufferSource();
-      src.buffer = spec.noise === 'brown' ? noiseBrown : noiseWhite;
-      src.loop = false;
-      src.connect(gain);
-    } else {
-      src = ctx.createOscillator();
-      src.type = spec.wave || 'sine';
-      src.frequency.setValueAtTime(spec.f0, t0);
-      if (spec.f1 !== spec.f0) src.frequency.exponentialRampToValueAtTime(Math.max(30, spec.f1), t0 + spec.dur);
-      src.connect(gain);
-    }
-    track(2);                                   // gain + src
-    src.onended = () => {
-      try { src.disconnect(); } catch (e) { /* noop */ }
-      try { gain.disconnect(); } catch (e) { /* noop */ }
-      track(-2);
-      if (onEnded) onEnded();
-    };
-    if (src.start) src.start(t0);
-    if (src.stop) src.stop(t0 + spec.dur + 0.02);
-    return true;
-  }
-
-  /**
-   * 琶音型（目前只有 `combo` 用）：上行三音错位起播 + 高频 shimmer。
-   * 规格 3.1 要求它是「全场唯一高亮度音色」，所以走 sine/triangle 泛音少、
-   * 高频 shimmer 加持；gain 上限已按 −2dB 换算，只低于盖章音。
-   */
-  function playArp(r, opts) {
-    sfxLive++;
-    const volScale = opts && opts.score != null ? Math.min(1.4, 0.5 + opts.score / 8) : 1;
-    const t0 = ctx.currentTime + 0.001;
-    const step = r.step || 0.08;
-    const notes = r.notes || [];
-    let done = 0;
-    const total = notes.length + (r.shimmer ? r.shimmer.length : 0);
-    const oneDown = () => {
-      done++;
-      if (done >= total) sfxLive = Math.max(0, sfxLive - 1);
-    };
-    notes.forEach((f, i) => {
-      startVoice({ type: 'tone', wave: r.wave || 'triangle', f0: f, f1: f, dur: r.noteDur || 0.45,
-        gain: r.gain || 0.2, attack: r.attack || 0.008 }, t0 + i * step, volScale, oneDown);
-    });
-    if (r.shimmer) {
-      r.shimmer.forEach((f, i) => {
-        // 随机相位：不用固定起播点，避免三个泛音叠成一条死板的「和弦柱」
-        startVoice({ type: 'tone', wave: 'sine', f0: f, f1: f, dur: r.shimmerDur || 0.3,
-          gain: r.shimmerGain || 0.04, attack: 0.004 }, t0 + (r.shimmerDelay || 0.02) + i * 0.055, 1, oneDown);
-      });
-    }
-    return true;
-  }
-
-  function playRecipe(id, opts) {
-    const r = AUDIO_SFX_RECIPES[id];
-    if (!r || !ctx || !enabled) return false;
-    if (sfxLive >= AUDIO_MAX_SFX || nodeCount > AUDIO_NODE_BUDGET - 3) return false;
-    if (r.type === 'arp') return playArp(r, opts);
-    const t0 = ctx.currentTime + 0.001;
-    const volScale = opts && opts.score != null ? Math.min(1.4, 0.5 + opts.score / 8) : 1;
-    sfxLive++;
-    startVoice(r, t0, volScale, () => { sfxLive = Math.max(0, sfxLive - 1); });
-    // 副声部（`overlay`）：与主声部同时起，给音效补「实体感 / 尾巴」，
-    // 例如 chapter 的翻页噪声 + 低频落地、fall 的下滑音 + 噪声尾。
-    if (r.overlay) startVoice(r.overlay, t0 + (r.overlayDelay || 0), volScale, null);
-    return true;
-  }
-
-  function flushQueue() {
-    while (queue.length) {
-      const item = queue.shift();
-      if (audioNow() - item.at <= AUDIO_QUEUE_TTL_MS) playRecipe(item.id, item.opts);
-    }
-  }
-
-  function scheduleBgm() {
-    if (!ctx || !enabled || !bgmGain) return;
-    const scale = AUDIO_MODE_SCALES[modeId] || AUDIO_MODE_SCALES[0];
-    const now = ctx.currentTime;
-    if (bgmNextNoteTime < now) bgmNextNoteTime = now + 0.05;   // 切回前台对齐，不补发
-    while (bgmNextNoteTime < now + AUDIO_LOOKAHEAD_MS / 1000) {
-      const t = bgmNextNoteTime;
-      const deg = scale[bgmStep % scale.length];
-      const oct = bgmStep % 8 === 0 ? 12 : 0;
-      const hz = rootHz * Math.pow(2, (deg + oct) / 12);
-      const osc = ctx.createOscillator();
-      const g = ctx.createGain();
-      osc.type = 'sine';
-      osc.frequency.value = hz;
-      const dur = 0.9;
-      g.gain.setValueAtTime(0.0001, t);
-      g.gain.exponentialRampToValueAtTime(0.09, t + 0.18);
-      g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-      osc.connect(g);
-      g.connect(bgmGain);
-      osc.start(t);
-      osc.stop(t + dur + 0.02);
-      osc.onended = () => { try { osc.disconnect(); g.disconnect(); } catch (e) { /* noop */ } };
-      bgmStep++;
-      bgmNextNoteTime += 0.62;
-    }
-  }
-
-  function startBgm() {
-    if (bgmTimer || !ctx) return;
-    bgmNextNoteTime = ctx.currentTime + 0.1;
-    bgmTimer = setInterval(scheduleBgm, AUDIO_SCHED_INTERVAL_MS);
-  }
-
-  const api = {
-    /** 契约：唯一解锁点。必须在首次 pointerdown 的同步路径里调一次。 */
-    unlockMedia() {
-      if (unlocked) return true;
-      const c = ensureCtx();
-      if (!c) return false;
-      unlocked = true;
-      unlockAt = audioNow();
-      // iOS：必须同时做 resume + 一次静音语音，缺一不可
-      try { c.resume && c.resume(); } catch (e) { /* iOS 可能拒绝，保持 suspended，下次手势再试 */ }
-      try {
-        if (typeof speechSynthesis !== 'undefined') {
-          const u = new SpeechSynthesisUtterance('');
-          u.volume = 0;
-          speechSynthesis.speak(u);
-        }
-      } catch (e) { /* 忽略 */ }
-      voiceState.unlockedVoice = true;
-      flushQueue();
-      startBgm();
-      return true;
-    },
-
-    /** 契约：play(sfxId, opts)。未解锁前只排 pendown/spawn，≤3 条，1.5s 过期。 */
-    play(sfxId, opts) {
-      if (!AUDIO_SFX_RECIPES[sfxId]) return false;
-      if (!unlocked) {
-        if (sfxId !== 'pendown' && sfxId !== 'spawn') return false;
-        if (queue.length >= AUDIO_QUEUE_MAX) return false;
-        queue.push({ id: sfxId, opts, at: audioNow() });
-        return false;
-      }
-      if (!enabled) return false;
-      return playRecipe(sfxId, opts);
-    },
-
-    /**
-     * 契约：speak(lineId, text, opts)。
-     * opts = { speaker?, level?, textMs?, onScreen?, precheck? }
-     *   · speaker   用于 C4 同音色 45s 间隔
-     *   · level     C.1b 级别（1 成功/盖章 2 受额度约束 3 开场 4 环境）
-     *   · onScreen  C5 前置条件，**由主程序提供**（不在画面内 → 挂起而不是丢弃）
-     *   · precheck  C.1 第 2 步的**只读**文字额度预检
-     *
-     * 出声与否由 voiceScheduler 按 C.1 的五步决定；这里只负责"把真 backend 接上去"。
-     * 返回值：true = 已起播（或已入队），false = 通道不可用/被拒（上层照常给气泡）。
-     */
-    speak(lineId, text, opts) {
-      const o2 = opts || {};
-      if (!lineId && !text) return false;
-      if (drawing) return false;                       // 绘制期间任何语音都不许起播（硬规则）
-      if (!unlocked) return false;                     // 不进队列：延迟台词比不播更糟
-      if (voiceState.available == null) probeVoices();
-      if (!voiceState.available) return false;         // 无中文语音 → 上层走气泡，绝不用英文念中文
-      if (typeof speechSynthesis === 'undefined') return false;
-      const res = voiceScheduler.request({
-        lineId: lineId || text,
-        text: text || lineId,
-        speaker: o2.speaker || 'narrator',
-        level: o2.level == null ? LINE_LEVEL.AMBIENT : o2.level,
-        textMs: o2.textMs,
-      });
-      return res !== 'rejected';
-    },
-
-    /** C.1b 抢占（尚未起播）：不扣额度 */
-    dropPendingLine(lineId) { return voiceScheduler.dropPending(lineId); },
-    /** C.1b 终止（已起播）：额度不退；只在语义过期时用 */
-    abortSpeaking(reason) { return voiceScheduler.abortSpeaking(reason); },
-    /** 场景边界（切关 / 说话人离场）：先抢占再终止 */
-    onSceneBoundary(reason) { return voiceScheduler.onSceneBoundary(reason); },
-    /** 主循环推进挂起/延后（每帧调一次即可，内部幂等） */
-    tickVoice() { voiceScheduler.tick(); },
-    /** 只读：语音额度与队列快照（诊断 / 单测） */
-    get voiceStateSnapshot() { return voiceScheduler.state; },
-    /** 主程序注入 C5 前置条件与 C.1 第 2 步的只读预检（音频层不认识关卡） */
-    setVoiceHooks(h) {
-      if (h && typeof h.isOnScreen === 'function') voiceHooks.isOnScreen = h.isOnScreen;
-      if (h && typeof h.precheckQuota === 'function') voiceHooks.precheckQuota = h.precheckQuota;
-    },
-
-    /** 契约：总开关。用 suspend/resume，保图，不重建。 */
-    setEnabled(on) {
-      enabled = !!on;
-      if (!ctx) return;
-      try {
-        if (enabled) { if (ctx.state === 'suspended' && unlocked) ctx.resume(); }
-        else ctx.suspend();
-      } catch (e) { /* iOS 可能拒绝，保持原状 */ }
-      if (masterGain) masterGain.gain.value = enabled ? 1 : 0;
-    },
-
-    /** 契约：章节转调唯一入口（换根音 + 重选音阶）。modeId 是数字：0=宫 1=羽 */
-    setKey(hz, m) {
-      rootHz = Number.isFinite(hz) ? hz : rootHz;
-      if (Number.isFinite(m)) modeId = m | 0;
-    },
-
-    /** P1：setVolume(bus, v) */
-    setVolume(bus, v) {
-      if (!ctx) return;
-      const target = bus === 'bgm' ? bgmGain : masterGain;
-      if (target) target.gain.value = Math.max(0, Math.min(1, v));
-    },
-
-    /** 输入层告诉音频：正在绘制（语音静默） */
-    setDrawing(on) { drawing = !!on; },
-
-    get unlocked() { return unlocked; },
-    get unlockAt() { return unlockAt; },
-    get voiceMode() { if (voiceState.available == null) probeVoices(); return voiceState.mode; },
-    get state() { return ctx ? ctx.state : 'none'; },
-    get nodeCount() { return nodeCount; },
-    get sfxLive() { return sfxLive; },
-  };
-
-  // visibilitychange 由音频侧单独处理（其他模块不许碰 ctx.suspend/resume）
-  if (typeof document !== 'undefined' && document.addEventListener) {
-    document.addEventListener('visibilitychange', () => {
-      if (!ctx) return;
-      try {
-        if (document.hidden) { if (bgmTimer) { clearInterval(bgmTimer); bgmTimer = 0; } }
-        else if (enabled && unlocked) { ctx.resume(); bgmNextNoteTime = 0; startBgm(); }
-      } catch (e) { /* 忽略 */ }
-    });
-    if (typeof speechSynthesis !== 'undefined' && speechSynthesis.addEventListener) {
-      speechSynthesis.addEventListener('voiceschanged', probeVoices);
-    }
-  }
-
-  return api;
-}
-
-/** 单例：游戏层只拿这一个，禁止自行 new AudioContext */
-const AudioBus = createAudioBus();
-;
 /* src/text/lines.js */
 /**
  * src/text/lines.js —— 台词表
@@ -5784,6 +5883,7 @@ function boot() {
     strokeCount: 0,
     audioOn: true,
     audioUnlocked: false,
+    soundTheme: AudioBus.soundTheme,   // 当前声音风格（暖木/八音盒/陶笛），「关于」面板里切换
     voiceMode: 'unknown',
     livePoints: 0,
     now: 0,
@@ -6124,10 +6224,26 @@ function boot() {
 
   // ---- 输入 ----
   function handleUiTap(x, y) {
-    // 「关于」展开时任何点击都先关掉它——让玩家去瞄「知道了」是多余的一步
-    if (view.about) { view.about = false; AudioBus.play('ui'); return true; }
+    // 「关于」展开时：先判声音风格芯片（点中则换主题、不关面板），其余任意点关闭
+    if (view.about) {
+      const tr = aboutThemeHit(x, y);
+      if (tr) {
+        AudioBus.setTheme(tr);
+        view.soundTheme = AudioBus.soundTheme;
+        AudioBus.play('ability');   // 选完即时试听
+        return true;
+      }
+      view.about = false;
+      AudioBus.play('ui');
+      return true;
+    }
     if (view.win) {
       if (mainNow() - view.winAt < 600) return true;
+      // 过关覆盖层上头部按钮仍可见：先判它们，避免点「重来」被当成「继续」直接跳下一关（已修 bug）
+      const wb = headerButtonAt(x, y);
+      if (wb === 'retry') { AudioBus.play('ui'); retryLevel(); return true; }
+      if (wb === 'audio') { view.audioOn = !view.audioOn; AudioBus.setEnabled(view.audioOn); AudioBus.play('ui'); return true; }
+      if (wb === 'about') { view.about = true; AudioBus.play('ui'); return true; }
       if (view.levelIndex >= GAME_LEVELS.length - 1) { view.levelIndex = 0; buildWorld(); say(view.level.lines.intro, 3200); }
       else nextLevel();
       return true;
