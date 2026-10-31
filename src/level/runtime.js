@@ -175,6 +175,9 @@ export function createLevelRuntime(opts) {
       kind: def.kind, home: { x: def.x, y: def.y }, graceMs: def.graceMs || 0,
       vx0: Number.isFinite(def.vx0) ? def.vx0 : null, stallMs: 0, settleMs: 0,
       releaseOnSpawn: def.releaseOnSpawn === true,
+      // 尺寸随体走：南瓜按自己的矩形画"方形南瓜"（圆角方身+瓜棱+瓜蒂），
+      // 物理体不变（仍是矩形）——关2 的全部难度标定（D32 的 21px 悬空窗口）依赖这个矩形。
+      w: def.w, h: def.h,
       isRespawn: !!isRespawn,
     };
     if (body.plugin.graceMs > 0) MATTER_RT.Body.setStatic(body, true);

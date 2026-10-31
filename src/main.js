@@ -883,6 +883,10 @@ export function boot() {
         drawFish(ctx, b, tMs);
         continue;
       }
+      if (b.label === 'prop' && b.plugin && b.plugin.kind === 'pumpkin') {
+        drawPumpkin(ctx, b, tMs);
+        continue;
+      }
       if (b.label === 'prop') {
         ctx.fillStyle = '#d98b3a';
         if (bodyPath(ctx, b)) { ctx.fill(); ctx.strokeStyle = '#7a4718'; ctx.lineWidth = 2; ctx.stroke(); }
@@ -1001,6 +1005,142 @@ export function boot() {
     ctx.strokeStyle = '#7a3d18';
     ctx.lineWidth = 1.6;
     ctx.stroke();
+    ctx.restore();
+  }
+
+  /** 关2 的南瓜：画成「方形南瓜」，不再是一个橙色方块。
+   *
+   *  为什么还要是方的：关2 的教学前提就是「它是方的，所以不会滚」——子标题「它不肯走。它是方的。」、
+   *  场景字「南瓜地（它是方的）」、失败提示「它是方的，自己不会走」都靠这句话成立；
+   *  物理体也必须是矩形（D32 的 21px 悬空窗口是按矩形标定出来的）。
+   *  所以这里不"画圆骗人"，而是把「方」做成角色设定：圆角方身 + 三条纵向瓜棱 + 瓜蒂 + 卷须 + 叶片，
+   *  暖橙径向渐变（背深肚浅）+ 左上高光。读到的是"一颗方的南瓜"，不是"橙色纸箱"。
+   *  姿态跟随 body.angle：翻倒时瓜蒂一起倒，形状与物理始终同一个姿态。 */
+  function drawPumpkin(ctx, body) {
+    const p = body.position;
+    const pl = body.plugin || {};
+    const w = pl.w || 62;
+    const h = pl.h || 62;
+    const hw = w / 2;
+    const hh = h / 2;
+    const bowX = Math.min(3.6, w * 0.058);    // 左右微鼓：瓜瓣的张力
+    const bowY = Math.min(1.4, w * 0.022);    // 上下近乎平：保住"方"
+    const r = Math.min(hw, hh) * 0.32;        // 圆角半径
+    const lw = Math.max(1.8, w * 0.036);
+
+    ctx.save();
+    ctx.translate(p.x, p.y);
+    ctx.rotate(body.angle || 0);
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+
+    const silhouette = () => {
+      ctx.beginPath();
+      ctx.moveTo(-hw + r, -hh);
+      ctx.quadraticCurveTo(0, -hh - bowY, hw - r, -hh);
+      ctx.quadraticCurveTo(hw, -hh, hw, -hh + r);
+      ctx.quadraticCurveTo(hw + bowX, 0, hw, hh - r);
+      ctx.quadraticCurveTo(hw, hh, hw - r, hh);
+      ctx.quadraticCurveTo(0, hh + bowY, -hw + r, hh);
+      ctx.quadraticCurveTo(-hw, hh, -hw, hh - r);
+      ctx.quadraticCurveTo(-hw - bowX, 0, -hw, -hh + r);
+      ctx.quadraticCurveTo(-hw, -hh, -hw + r, -hh);
+      ctx.closePath();
+    };
+
+    // 瓜身：左上偏亮的径向渐变（背深肚浅）
+    const grad = ctx.createRadialGradient(-hw * 0.28, -hh * 0.34, hh * 0.16, 0, 0, hh * 1.55);
+    grad.addColorStop(0, '#f2a95c');
+    grad.addColorStop(0.52, '#e0832f');
+    grad.addColorStop(1, '#b95c1c');
+    silhouette();
+    ctx.fillStyle = grad;
+    ctx.fill();
+
+    // 纵向瓜棱：三条外弧把方身切成四瓣（"瓜"的辨识度主要靠这三笔）
+    // 要点：棱必须**明显外弧**并且几乎贯通上下，否则读成"橙色盒子上的三道条纹"（实测踩过）。
+    const ribLw = Math.max(1.5, w * 0.034);
+    for (const rx of [-hw * 0.55, 0, hw * 0.55]) {
+      const bulge = rx === 0 ? hw * 0.1 : Math.sign(rx) * hw * 0.21;
+      const x0 = rx * 1.0;
+      // 先给一道受光细边（棱右侧），再叠深色主棱 —— 两笔才有"瓣"的立体感
+      ctx.beginPath();
+      ctx.moveTo(x0 + ribLw * 0.7, -hh * 0.86);
+      ctx.quadraticCurveTo(x0 + bulge + ribLw * 0.7, 0, x0 + ribLw * 0.7, hh * 0.86);
+      ctx.strokeStyle = 'rgba(255,214,158,0.4)';
+      ctx.lineWidth = ribLw * 0.8;
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(x0, -hh * 0.86);
+      ctx.quadraticCurveTo(x0 + bulge, 0, x0, hh * 0.86);
+      ctx.strokeStyle = 'rgba(122,58,16,0.5)';
+      ctx.lineWidth = ribLw;
+      ctx.stroke();
+    }
+
+    // 左上高光：径向渐隐（不能用硬边椭圆——那读成贴上去的浅色贴纸，实测）
+    const hi = ctx.createRadialGradient(-hw * 0.42, -hh * 0.42, 0, -hw * 0.42, -hh * 0.42, hw * 0.72);
+    hi.addColorStop(0, 'rgba(255,244,214,0.5)');
+    hi.addColorStop(0.5, 'rgba(255,238,200,0.2)');
+    hi.addColorStop(1, 'rgba(255,238,200,0)');
+    silhouette();
+    ctx.fillStyle = hi;
+    ctx.fill();
+
+    // 墨线轮廓（一笔深棕，手绘感）
+    silhouette();
+    ctx.strokeStyle = '#7a4718';
+    ctx.lineWidth = lw;
+    ctx.stroke();
+
+    // 瓜蒂：短粗、上细下粗，从顶部偏右长出（翻倒时跟着倒）
+    const stemW = Math.max(4, w * 0.09);
+    ctx.beginPath();
+    ctx.moveTo(hw * 0.03, -hh + 4);
+    ctx.quadraticCurveTo(hw * 0.03, -hh - 5, -hw * 0.02, -hh - 9);
+    ctx.strokeStyle = '#5e5530';
+    ctx.lineWidth = stemW;
+    ctx.stroke();
+    ctx.strokeStyle = '#9a8d55';           // 受光侧一道细亮边
+    ctx.lineWidth = Math.max(1.2, w * 0.026);
+    ctx.stroke();
+
+    // 卷须：从蒂根往左甩一小圈（南瓜的标志件之一）
+    ctx.strokeStyle = '#6f7a3f';
+    ctx.lineWidth = Math.max(1.2, w * 0.026);
+    ctx.beginPath();
+    ctx.moveTo(-hw * 0.02, -hh - 5);
+    ctx.quadraticCurveTo(-hw * 0.3, -hh - 13, -hw * 0.46, -hh - 7);
+    ctx.quadraticCurveTo(-hw * 0.56, -hh - 2, -hw * 0.42, -hh - 3);
+    ctx.stroke();
+
+    // 叶片：一片带缺刻的尖叶（两侧弧 + 主脉 + 两条侧脉），别画成"草叶"
+    ctx.beginPath();
+    ctx.moveTo(hw * 0.14, -hh + 2);
+    ctx.quadraticCurveTo(hw * 0.3, -hh - 9, hw * 0.66, -hh - 12);
+    ctx.quadraticCurveTo(hw * 0.92, -hh - 13, hw * 0.98, -hh - 9);
+    ctx.quadraticCurveTo(hw * 0.72, -hh - 4.5, hw * 0.58, -hh + 0.5);
+    ctx.quadraticCurveTo(hw * 0.4, -hh - 0.5, hw * 0.14, -hh + 2);
+    ctx.closePath();
+    ctx.fillStyle = '#7d8c46';
+    ctx.fill();
+    ctx.strokeStyle = '#4a5628';
+    ctx.lineWidth = Math.max(1.1, w * 0.022);
+    ctx.stroke();
+    ctx.beginPath();                       // 主脉
+    ctx.moveTo(hw * 0.18, -hh + 1);
+    ctx.quadraticCurveTo(hw * 0.6, -hh - 6, hw * 0.94, -hh - 9.5);
+    ctx.stroke();
+    for (const t of [0.34, 0.62]) {        // 侧脉
+      const bx = hw * (0.18 + (0.94 - 0.18) * t);
+      const by = -hh + 1 - 7 * t;
+      ctx.beginPath();
+      ctx.moveTo(bx, by);
+      ctx.lineTo(bx + hw * 0.05, by - hh * 0.16);
+      ctx.lineWidth = Math.max(0.9, w * 0.016);
+      ctx.stroke();
+    }
+
     ctx.restore();
   }
 
