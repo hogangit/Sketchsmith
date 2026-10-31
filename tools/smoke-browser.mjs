@@ -31,7 +31,12 @@ const CASES = [
   // 关4 弹射主解：弹簧板画在崖前平地（中心 x≈142，落在可绘制窗口 [100,155] 内），点「变硬+怕痒」
   // 小人踩中沿法线被弹起、actor 特例改「向上+朝目标」弹射（D27），抛物线落上高台。
   { level: 3, name: 'L4 弹射板(变硬+怕痒)', line: [107, 700, 177, 704], ability: ['harden', 'tickle'] },
-  { level: 4, name: 'L5 跨河长桥+变硬', line: [140, 700, 292, 704], ability: 'harden' },
+  // 关5 弹射越鱼潭：左岸画弹射板（变硬+怕痒），小人弹起越过鱼潭落到对岸高墙顶。
+  // 弹射板中心 x≈190（node 探针实测窗口 [160,230] 全过；150 偏低撞墙），对齐 hints.beamOutline。
+  { level: 4, name: 'L5 弹射板(变硬+怕痒)', line: [165, 700, 215, 704], ability: ['harden', 'tickle'] },
+  // 反例：用户核心痛点"画一条横杠就能过"。单梁右端 x≈360 够不到对岸(x378)，整根翻进河汊 → 必败。
+  // expectFail=true → 过关反而判失败（缺陷未根治），未过关才算通过。
+  { level: 4, name: 'L5 单根长板(反例:应失败)', line: [150, 700, 360, 704], ability: 'harden', expectFail: true },
 ];
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -236,12 +241,16 @@ async function main() {
       await sleep(300);
       const drawExpr = c.circle
         ? `(()=>{const pts=[];const[rx,ry,r]=[${c.circle[0]},${c.circle[1]},${c.circle[2]}];for(let i=0;i<=64;i++){const t=i/64*Math.PI*2*0.96-Math.PI*0.25;pts.push({x:rx+Math.cos(t)*r*(1+Math.sin(i*1.9)*0.012),y:ry+Math.sin(t)*r});}__WCWZ__.spawnFromStrokes([{pts}]);return 1;})()`
-        : `(()=>{const pts=[];const[x1,y1,x2,y2]=[${c.line[0]},${c.line[1]},${c.line[2]},${c.line[3]}];const n=60;for(let i=0;i<=n;i++){const t=i/n;pts.push({x:x1+(x2-x1)*t+Math.sin(i*1.7)*0.7,y:y1+(y2-y1)*t+Math.cos(i*2.3)*0.7});}__WCWZ__.spawnFromStrokes([{pts}]);return 1;})()`;
+        : c.lines
+          ? `(()=>{const segs=${JSON.stringify(c.lines)};for(const L of segs){const[x1,y1,x2,y2]=L;const pts=[];const n=60;for(let i=0;i<=n;i++){const t=i/n;pts.push({x:x1+(x2-x1)*t+Math.sin(i*1.7)*0.7,y:y1+(y2-y1)*t+Math.cos(i*2.3)*0.7});}__WCWZ__.spawnFromStrokes([{pts}]);__WCWZ__.runtime.setAbility('${(Array.isArray(c.ability) ? c.ability[0] : c.ability)}');}return 1;})()`
+          : `(()=>{const pts=[];const[x1,y1,x2,y2]=[${c.line[0]},${c.line[1]},${c.line[2]},${c.line[3]}];const n=60;for(let i=0;i<=n;i++){const t=i/n;pts.push({x:x1+(x2-x1)*t+Math.sin(i*1.7)*0.7,y:y1+(y2-y1)*t+Math.cos(i*2.3)*0.7});}__WCWZ__.spawnFromStrokes([{pts}]);return 1;})()`;
       await evalJs(drawExpr);
       await sleep(200);
       // 支持多枚能力：关4 弹射板是「变硬 + 怕痒」两枚相乘才成立（认知变量=配对）
       const abs = Array.isArray(c.ability) ? c.ability : [c.ability];
-      for (const a of abs) await evalJs(`__WCWZ__.runtime.setAbility('${a}'); 1`);
+      if (!c.lines) {
+        for (const a of abs) await evalJs(`__WCWZ__.runtime.setAbility('${a}'); 1`);
+      }
       let status = 'playing';
       let elapsed = 0;
       for (let i = 0; i < 60; i++) {
@@ -251,7 +260,14 @@ async function main() {
         status = o.s;
         if (status === 'finished') { console.log(`[smoke] ${c.name} → 过关（${(elapsed / 1000).toFixed(1)}s, form=${o.f}, degraded=${o.d}）`); break; }
       }
-      if (status !== 'finished') {
+      if (c.expectFail) {
+        // 反例：设计上就不该过。过关=缺陷没修好（"画横杠即过"仍在），未过=缺陷已根治
+        if (status === 'finished') {
+          failures.push(`${c.name} 居然过关了——"画一条横杠就能过"的缺陷未修复（用户痛点复现）`);
+        } else {
+          console.log(`[smoke] ${c.name} → 正确失败（未过关，卡在 ${status}）✔ 缺陷已根治`);
+        }
+      } else if (status !== 'finished') {
         failures.push(`${c.name} 未过关（卡在 ${status}）`);
         const dbg = await evalJs('JSON.stringify(__WCWZ__.view.snapshot)');
         console.log('[smoke] 失败快照 ' + dbg.slice(0, 400));

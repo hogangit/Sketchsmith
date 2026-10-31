@@ -153,6 +153,7 @@ export function createLevelRuntime(opts) {
       MATTER_RT.Body.setDensity(body, DENSITY_FISH);   // 红线 L6：密度只在 materials.js 里写
       body.plugin = {
         kind: 'fish', home: { x: def.x, y: def.y }, homeY: def.y,
+        w: def.w, h: def.h,
         vx0: Number.isFinite(def.vx0) ? def.vx0 : 0,
         xMin: Number.isFinite(def.xMin) ? def.xMin : def.x - 40,
         xMax: Number.isFinite(def.xMax) ? def.xMax : def.x + 40,

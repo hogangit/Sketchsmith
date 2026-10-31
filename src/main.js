@@ -879,6 +879,10 @@ export function boot() {
         if (bodyPath(ctx, b)) { ctx.fill(); ctx.strokeStyle = '#4d4638'; ctx.lineWidth = 2; ctx.stroke(); }
         continue;
       }
+      if (b.label === 'prop' && b.plugin && b.plugin.kind === 'fish') {
+        drawFish(ctx, b, tMs);
+        continue;
+      }
       if (b.label === 'prop') {
         ctx.fillStyle = '#d98b3a';
         if (bodyPath(ctx, b)) { ctx.fill(); ctx.strokeStyle = '#7a4718'; ctx.lineWidth = 2; ctx.stroke(); }
@@ -937,6 +941,67 @@ export function boot() {
       }
       ctx.globalAlpha = 1;
     }
+  }
+
+  /** 关5 的鱼：画成真正的锦鲤（椭圆身 + 摆尾 + 背鳍 + 眼 + 嘴），不再是与南瓜同款的橙色矩形。
+   *  朝向随水平速度翻转，尾巴按时间轻摆，配暖橙渐变（背深肚浅）。物理体仍是矩形，仅作碰撞。 */
+  function drawFish(ctx, body, tMs) {
+    const p = body.position;
+    const vx = (body.velocity && body.velocity.x) || 0;
+    const dir = vx >= 0 ? 1 : -1;
+    const w = (body.plugin && body.plugin.w) || 52;
+    const h = (body.plugin && body.plugin.h) || 28;
+    const sw = Math.sin((tMs / 1000) * 6) * 0.4;   // 摆尾相位
+    ctx.save();
+    ctx.translate(p.x, p.y);
+    ctx.scale(dir, 1);
+    // 身体渐变：背深肚浅
+    const grad = ctx.createLinearGradient(0, -h / 2, 0, h / 2);
+    grad.addColorStop(0, '#d9733a');
+    grad.addColorStop(0.5, '#f3a45c');
+    grad.addColorStop(1, '#fbd9a8');
+    // 尾鳍（身体后方 = 左侧，已按 dir 翻转）
+    ctx.beginPath();
+    ctx.moveTo(-w / 2 + 3, 0);
+    ctx.quadraticCurveTo(-w / 2 - 16, -h / 2 - 4 + sw * 10, -w / 2 - 22, -2 + sw * 7);
+    ctx.quadraticCurveTo(-w / 2 - 16, h / 2 + 4 + sw * 10, -w / 2 + 3, 0);
+    ctx.closePath();
+    ctx.fillStyle = '#f3a45c';
+    ctx.strokeStyle = '#7a3d18';
+    ctx.lineWidth = 2;
+    ctx.fill();
+    ctx.stroke();
+    // 身体
+    ctx.beginPath();
+    ctx.ellipse(0, 0, w / 2, h / 2, 0, 0, Math.PI * 2);
+    ctx.fillStyle = grad;
+    ctx.fill();
+    ctx.stroke();
+    // 背鳍
+    ctx.beginPath();
+    ctx.moveTo(-4, -h / 2 + 1);
+    ctx.quadraticCurveTo(4, -h / 2 - 13, 14, -h / 2 + 1);
+    ctx.closePath();
+    ctx.fillStyle = '#d9733a';
+    ctx.fill();
+    ctx.stroke();
+    // 眼（前方 = 右侧）
+    ctx.beginPath();
+    ctx.arc(w / 2 - 11, -3, 3.4, 0, Math.PI * 2);
+    ctx.fillStyle = '#fff';
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(w / 2 - 11.6, -3, 1.8, 0, Math.PI * 2);
+    ctx.fillStyle = '#222';
+    ctx.fill();
+    // 嘴
+    ctx.beginPath();
+    ctx.moveTo(w / 2 - 1, 4);
+    ctx.lineTo(w / 2 - 7, 6.5);
+    ctx.strokeStyle = '#7a3d18';
+    ctx.lineWidth = 1.6;
+    ctx.stroke();
+    ctx.restore();
   }
 
   function drawBook(ctx) {
