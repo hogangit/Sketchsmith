@@ -10,7 +10,7 @@ import { pathToFileURL } from 'node:url';
 import { loadGameEnv, ROOT, synthLine, synthRect, synthCircle } from './helpers/env.mjs';
 
 const env = await loadGameEnv();
-const { geometry, simplify, classify, compose, registry, combos } = env;
+const { geometry, simplify, classify, compose, registry, combos, bodyFactory } = env;
 const { createBus } = await import('../src/core/bus.js');
 const storage = await import('../src/core/storage.js');
 
@@ -47,6 +47,54 @@ test('classifyForm：细长开口 → 梁；闭合扁圈 → 团块；闭合圆 
 test('classify：太小的笔画被标 tooSmall（不生成刚体，但也不报错）', () => {
   const tiny = classify.analyzeStrokeGroup([{ pts: [{ x: 100, y: 700 }, { x: 103, y: 701 }] }]);
   assert.equal(tiny.tooSmall, true);
+});
+
+// ── D36（2026-10-31 用户反馈"第4关画很多形状都会变成圆形"）──────────────────
+// 旧判定树只看长宽比：闭合且 aspect ≤1.5 ⇒ 轮 ⇒ 物理体**换成一个完美圆**。
+// 于是画方块/三角/星形都拿到一个会滚的圆，而关4 要的是一块能弹的板 —— 帮倒忙。
+// 这两条用例把"圆只留给真的圆"钉死，别让它悄悄退回去。
+function mkBody(pts) {
+  const g = classify.analyzeStrokeGroup([{ pts }]);
+  const built = bodyFactory.buildCreatureBody({ form: g.form, geo: g, thickness: 12, spawn: { x: g.centroid.x, y: 84 }, mods: {}, flags: {} });
+  return { g, built, isCircle: !!(built.bodies[0] && built.bodies[0].circleRadius) };
+}
+
+test('D36：闭合圆仍是轮；方块/三角保持团块（不再被替换成圆）', () => {
+  const w = mkBody(synthCircle(200, 700, 40, 6));
+  assert.equal(w.g.form, 'wheel', '真画的圆必须还是轮');
+  assert.ok(w.g.circularity >= 0.86, `圆的圆形度应 ≥0.86，实测 ${w.g.circularity.toFixed(3)}`);
+  assert.equal(w.isCircle, true);
+
+  const sq = mkBody(synthRect(200, 700, 56, 56, 4));
+  assert.equal(sq.g.form, 'blob', '方块必须保持团块：保留玩家画出来的形状');
+  assert.ok(sq.g.circularity < 0.86, '方块的圆形度应低于轮的门槛');
+  assert.equal(sq.isCircle, false, '方块不该生成圆柱刚体');
+
+  const triPts = [0, 1, 2, 3].flatMap((i) => {
+    const a = -Math.PI / 2 + (i % 3) * (Math.PI * 2) / 3;
+    const px = 200 + Math.cos(a) * 34, py = 700 + Math.sin(a) * 34;
+    const out = [];
+    for (let s = 0; s < 10; s++) out.push({ x: px + s * 0.01, y: py });
+    return out;
+  }).slice(0, 39);
+  const tri = mkBody(triPts);
+  assert.notEqual(tri.g.form, 'wheel', '三角形不该判成轮');
+  assert.equal(tri.isCircle, false);
+});
+
+// RDP 的闭合环退化：首尾精确重合时，"点到首尾连线的垂距"全部退化，整条笔被压成 2 点 →
+// 周长 0 → 判墨点 → **什么都不生成**。认真把形状画回起点（最常见的画法）因此吃不到任何东西。
+test('D36：精确闭合的笔画（首尾同点）不再被 RDP 压成墨点', () => {
+  const sq = classify.analyzeStrokeGroup([{ pts: synthRect(200, 700, 56, 56, 0) }]);
+  assert.equal(sq.tooSmall, false, '精确闭合的方块被当成墨点 → 什么都没生成');
+  assert.ok(sq.nodes >= 4, `应保留 ≥4 个节点，实测 ${sq.nodes}`);
+  assert.equal(sq.form, 'blob');
+
+  const circ = classify.analyzeStrokeGroup([{ pts: synthCircle(200, 700, 34, 0) }]);
+  assert.equal(circ.tooSmall, false, '精确闭合的圆被当成墨点');
+  assert.equal(circ.form, 'wheel');
+  const simple = simplify.rdpSimplify(synthCircle(200, 700, 34, 0));
+  assert.ok(simple.length >= 6, `精确闭合的圆简化后应 ≥6 点，实测 ${simple.length}`);
 });
 
 test('判定树 2b：两笔相连且细长 → 梁（不是绳，绳在 v1 未实装）', () => {

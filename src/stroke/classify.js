@@ -7,6 +7,7 @@
 import {
   CLOSE_TOL_MIN, CLOSE_TOL_RATIO, MIN_STROKE_LENGTH, MIN_STROKE_AREA,
   ASPECT_WHEEL_MAX, ASPECT_BLOB_MAX, ASPECT_BEAM_MIN, HOLE_AREA_RATIO,
+  WHEEL_CIRCULARITY_MIN, WHEEL_SOLIDITY_MIN,
 } from './thresholds.js';
 import {
   geoBBox, geoCentroid, geoConvexHull, geoDist, geoIsSelfIntersecting,
@@ -33,7 +34,18 @@ export function classifyForm(g) {
   if (g.strokeCount >= 2 && g.strokesAdjacent && g.aspect > 6) return 'beam';
   if (g.closed && g.holeCount >= 1 && g.holeAreaRatio > HOLE_AREA_RATIO) return 'container';
   if (g.closed && g.area < MIN_STROKE_AREA) return 'grain';
-  if (g.closed && g.aspect <= ASPECT_WHEEL_MAX) return 'wheel';
+  // 序 5（D36 修订，2026-10-31 用户反馈"画什么都变圆"）：原来只看长宽比 ⇒ **方块/三角/星形
+  // 也被判成轮**，物理体当场换成一个完美圆（会滚），玩家画方块垫脚却拿到轮子——这是错的。
+  // 现在补两条圆度判据，轮只留给**真的画了一个圆**的笔画：
+  //   · circularity = 4π·面积/周长²（理想圆 1.0；六边形 0.93；**方块 0.80**；三角 0.62）
+  //   · solidity    = 面积/凸包面积（圆≈1.0；星形/缺角 ≈0.45）
+  // 阈值 0.86 落在六边形(0.93)与方块(0.80)之间：两边各留 7% 余量（标定见 D36）。
+  // 旧调用方若没算这两个字段 → 按非圆处理（宁可保留玩家画的形状，也不替他改成一个圆）。
+  if (g.closed && g.aspect <= ASPECT_WHEEL_MAX) {
+    const circ = Number.isFinite(g.circularity) ? g.circularity : 0;
+    const soli = Number.isFinite(g.solidity) ? g.solidity : 0;
+    if (circ >= WHEEL_CIRCULARITY_MIN && soli >= WHEEL_SOLIDITY_MIN) return 'wheel';
+  }
   if (g.closed && g.aspect <= ASPECT_BLOB_MAX) return 'blob';
   if (g.closed) return 'blob';                       // 长闭合：不允许判梁，否则画个长圈白拿梁
   if (g.aspect > ASPECT_BEAM_MIN) return 'beam';
@@ -54,6 +66,7 @@ export function analyzeStrokeGroup(strokeGroup) {
     return {
       form: 'dot', tooSmall: true, strokeCount: 0, closed: false, selfIntersect: false,
       perimeter: 0, bbox: geoBBox([]), aspect: 1, area: 0, hullArea: 0,
+      circularity: 0, solidity: 0,
       centroid: { x: 0, y: 0 }, holeCount: 0, holeAreaRatio: 0, strokesAdjacent: false,
       centerline: [], pointCount: 0, nodes: 0,
     };
@@ -124,9 +137,14 @@ export function analyzeStrokeGroup(strokeGroup) {
   const centroid = closed && outerPoly ? geoCentroid(outerPoly, true) : geoCentroid(rawAll.length ? rawAll : centerline, false);
   const hullArea = geoPolygonArea(geoConvexHull(all));
 
+  // D36：轮的两条圆度判据（单位无量纲，与尺寸无关）
+  // 注意口径必须与标定一致：area 用鞋带公式（隐式首尾相连），perimeter 用折线长度（不含收口那段）。
+  const circularity = area > 0 && perimeter > 0 ? (4 * Math.PI * area) / (perimeter * perimeter) : 0;
+  const solidity = hullArea > 0 ? area / hullArea : 0;
+
   const g = {
     form: 'blob', tooSmall, strokeCount: prepared.length, closed, selfIntersect,
-    perimeter, bbox, aspect, area, hullArea, centroid,
+    perimeter, bbox, aspect, area, hullArea, circularity, solidity, centroid,
     holeCount, holeAreaRatio, strokesAdjacent,
     centerline, outerPoly, prepared,
     pointCount: all.length, nodes: prepared.reduce((s, p) => s + p.length, 0),
